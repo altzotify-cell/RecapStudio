@@ -105,6 +105,8 @@ DEFAULT_CONFIG = {
         "elevenlabs_model": "eleven_v3",
         "elevenlabs_stability": 0.5,
         "minimax_voice": "male-qn-qingse",
+        "kokoro_voice": "am_michael",
+        "kokoro_speed": 1.0,
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
@@ -476,6 +478,9 @@ def seg_media(seg, default_vid):
     if not f and default_vid and seg.get("src_start"):
         f = default_vid
     if not f:
+        if MODULE == "comic_recap":
+            return {"kind": "slate", "why": "no page/focus in this segment - it looks like a movie-recap segment "
+                                            "(src_start/src_end). Ask Claude again with the COMIC prompt + the PDF."}
         return {"kind": "slate", "why": "no footage yet"}
     try:
         start = parse_time(seg["src_start"]) if seg.get("src_start") else 0.0
@@ -1272,7 +1277,18 @@ MINIMAX_VOICES = [
     ("Wise_Woman", "Wise Woman (mature narrative)"),
     ("audiobook_male_1", "Audiobook Male (deep storyteller)"),
 ]
+KOKORO_VOICES = [
+    ("af_heart", "Heart (US female, warm)"), ("af_bella", "Bella (US female, expressive)"),
+    ("af_nicole", "Nicole (US female, soft)"), ("af_sarah", "Sarah (US female, clear)"),
+    ("am_michael", "Michael (US male, narrator)"), ("am_fenrir", "Fenrir (US male, deep)"),
+    ("am_adam", "Adam (US male, plain)"), ("am_puck", "Puck (US male, lively)"),
+    ("bm_george", "George (UK male, narrator)"), ("bm_fable", "Fable (UK male, storyteller)"),
+    ("bm_lewis", "Lewis (UK male, calm)"), ("bf_emma", "Emma (UK female)"),
+]
+KOKORO_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+KOKORO_FILES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
 ENGINES = [("edge", "Edge-TTS    (free, unlimited)"),
+           ("kokoro", "Kokoro      (free, runs on your PC, offline)"),
            ("elevenlabs", "ElevenLabs  (multi-key, premade voices)"),
            ("minimax", "MiniMax     (multi-key, speech-2.6-hd)")]
 
@@ -1338,6 +1354,80 @@ def make_edge(cfg, pick):
         async def go():
             await edge_tts.Communicate(text, voice, rate=rate).save(out)
         asyncio.run(go())
+        return True
+    return runner
+
+
+def kokoro_model_dir():
+    """Shared folder for the ~350 MB model: <Recap Studio>/models/kokoro (found by walking up from the project)."""
+    here = ROOT
+    for d in (here, os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
+        if all(os.path.isfile(os.path.join(d, "models", "kokoro", f)) for f in KOKORO_FILES):
+            return os.path.join(d, "models", "kokoro")
+    base = here
+    for d in (os.path.dirname(os.path.dirname(here)), os.path.dirname(here), here):
+        if os.path.isfile(os.path.join(d, "SETUP.bat")) or os.path.isfile(os.path.join(d, "studio.py")):
+            base = d
+            break
+    return os.path.join(base, "models", "kokoro")
+
+
+def kokoro_download(folder):
+    import requests
+    os.makedirs(folder, exist_ok=True)
+    for name in KOKORO_FILES:
+        dest = os.path.join(folder, name)
+        if os.path.isfile(dest) and os.path.getsize(dest) > 1_000_000:
+            continue
+        print(f"Downloading Kokoro model file {name} (one time only) ...")
+        tmp = dest + ".part"
+        with requests.get(KOKORO_BASE + name, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length") or 0)
+            got = 0
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(1 << 20):
+                    f.write(chunk)
+                    got += len(chunk)
+                    if total:
+                        progress(got, total, f"Downloading {name}")
+        os.replace(tmp, dest)
+    return folder
+
+
+def make_kokoro(cfg, pick):
+    try:
+        from kokoro_onnx import Kokoro
+        import soundfile as sf
+    except ImportError:
+        die("Kokoro is not installed. Run SETUP.bat again (or:  pip install kokoro-onnx soundfile).")
+    t = cfg["tts"]
+    if pick:
+        t["kokoro_voice"] = ask_choice("Kokoro voices:", KOKORO_VOICES)
+        save_config(cfg)
+    voice = t.get("kokoro_voice") or "am_michael"
+    speed = float(t.get("kokoro_speed", 1.0) or 1.0)
+    folder = kokoro_model_dir()
+    try:
+        kokoro_download(folder)
+    except Exception as e:
+        die(f"Could not download the Kokoro model ({e}).\nDownload these two files by hand into {folder}:\n"
+            + "\n".join(f"  {KOKORO_BASE}{f}" for f in KOKORO_FILES))
+    print(f"Engine: Kokoro (local) | Voice: {voice} | Speed: {speed}")
+    k = Kokoro(os.path.join(folder, KOKORO_FILES[0]), os.path.join(folder, KOKORO_FILES[1]))
+    lang = "en-gb" if voice.startswith("b") else "en-us"
+
+    def runner(text, out):
+        samples, sr = k.create(text, voice=voice, speed=speed, lang=lang)
+        wav = out + ".wav"
+        sf.write(wav, samples, sr)
+        r = run(["ffmpeg", "-y", "-loglevel", "error", "-i", wav, "-ac", "1", "-b:a", "128k", "-f", "mp3", out])
+        try:
+            os.remove(wav)
+        except OSError:
+            pass
+        if r.returncode != 0:
+            raise RuntimeError("ffmpeg could not make the mp3: " + tail(r.stderr))
         return True
     return runner
 
@@ -1488,6 +1578,8 @@ def tts_signature(engine, cfg):
         return f"el|{t.get('elevenlabs_voice_id')}|{t.get('elevenlabs_model')}|{t.get('elevenlabs_stability')}"
     if engine == "minimax":
         return f"mm|{t.get('minimax_voice')}"
+    if engine == "kokoro":
+        return f"kk|{t.get('kokoro_voice')}|{t.get('kokoro_speed')}"
     return f"edge|{t.get('edge_voice')}|{t.get('edge_rate')}"
 
 
@@ -1551,7 +1643,7 @@ def step_tts(args):
             os.remove(f)
         save_manifest({})
 
-    maker = {"edge": make_edge, "elevenlabs": make_elevenlabs, "minimax": make_minimax}.get(engine, make_edge)
+    maker = {"edge": make_edge, "kokoro": make_kokoro, "elevenlabs": make_elevenlabs, "minimax": make_minimax}.get(engine, make_edge)
     generate = maker(cfg, args.pick)
     sig = tts_signature(engine, cfg)
     tagged = keeps_tags(engine, cfg)
@@ -3003,7 +3095,7 @@ def step_check(args):
     for t in ("ffmpeg", "ffprobe"):
         print(f"  {t:<9} {'OK' if shutil.which(t) else 'MISSING  -> run SETUP.bat'}")
     print(f"  {'yt-dlp':<9} {'OK' if ytdlp_cmd() else 'MISSING  -> run SETUP.bat (only needed for the collect step)'}")
-    for mod in ("requests", "edge_tts") + (("PIL", "numpy", "fitz") if MODULE == "comic_recap" else ()):
+    for mod in ("requests", "edge_tts") + (("kokoro_onnx",) if CFG["tts"].get("engine") == "kokoro" else ()) + (("PIL", "numpy", "fitz") if MODULE == "comic_recap" else ()):
         try:
             __import__(mod)
             print(f"  {mod:<9} OK")
@@ -3917,7 +4009,7 @@ def main():
     ap.add_argument("--import", dest="do_import", action="store_true", help="review: import edits from the CSV")
     ap.add_argument("--simple", action="store_true", help="videopad: picture + voice only (one muxed file per segment)")
     ap.add_argument("--retry", action="store_true", help="collect: ask again for skipped shots")
-    ap.add_argument("--engine", choices=("edge", "elevenlabs", "minimax"), help="tts: skip the engine prompt")
+    ap.add_argument("--engine", choices=("edge", "kokoro", "elevenlabs", "minimax"), help="tts: skip the engine prompt")
     ap.add_argument("--yes", action="store_true", help="auto-confirm destructive / re-voice prompts")
     ap.add_argument("--id", help="collect_one: segment id")
     ap.add_argument("--url", help="collect_one: source URL")

@@ -38,6 +38,11 @@ build/
 *.xml
 !_template/*.xml
 
+# ===== Local TTS models (Kokoro: ~350 MB, auto-downloaded) =====
+models/
+*.onnx
+*.onnx.part
+
 # ===== OS / editor =====
 .DS_Store
 Thumbs.db

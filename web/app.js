@@ -904,6 +904,8 @@ function renderVoice(c) {
     '<option value="' + e[0] + '"' + (e[0] === engine ? " selected" : "") + '>' + esc(e[1]) + '</option>').join("");
   const edgeOpts = state.bootstrap.edge_voices.map(v =>
     '<option value="' + v[0] + '"' + (v[0] === t.edge_voice ? " selected" : "") + '>' + esc(v[1]) + '</option>').join("");
+  const kkOpts = state.bootstrap.kokoro_voices.map(v =>
+    '<option value="' + v[0] + '"' + (v[0] === (t.kokoro_voice || "am_michael") ? " selected" : "") + '>' + esc(v[1]) + '</option>').join("");
   const mmOpts = state.bootstrap.minimax_voices.map(v =>
     '<option value="' + v[0] + '"' + (v[0] === t.minimax_voice ? " selected" : "") + '>' + esc(v[1]) + '</option>').join("");
 
@@ -915,6 +917,12 @@ function renderVoice(c) {
         '<div id="vEdge" class="' + (engine === "edge" ? "" : "hidden") + '">' +
           '<label>Edge voice</label><select id="vEdgeVoice">' + edgeOpts + '</select>' +
           '<label>Rate</label><input id="vEdgeRate" value="' + esc(t.edge_rate || "+0%") + '">' +
+        '</div>' +
+        '<div id="vKokoro" class="' + (engine === "kokoro" ? "" : "hidden") + '">' +
+          '<label>Kokoro voice</label><select id="vKokoroVoice">' + kkOpts + '</select>' +
+          '<label>Speed (1.0 = normal, 1.15 = faster)</label><input id="vKokoroSpeed" value="' + esc(t.kokoro_speed != null ? t.kokoro_speed : 1.0) + '">' +
+          '<p class="muted">Runs on your PC. The first run downloads the ~350 MB model once. No audio tags: they are stripped.' +
+            (state.bootstrap.tools.kokoro ? "" : ' <span class="bad">kokoro-onnx missing (run SETUP.bat)</span>') + '</p>' +
         '</div>' +
         '<div id="vMini" class="' + (engine === "minimax" ? "" : "hidden") + '">' +
           '<label>MiniMax voice</label><select id="vMiniVoice">' + mmOpts + '</select>' +
@@ -955,6 +963,7 @@ function voiceEngineChange() {
   const e = document.getElementById("vEngine").value;
   document.getElementById("vEdge").classList.toggle("hidden", e !== "edge");
   document.getElementById("vMini").classList.toggle("hidden", e !== "minimax");
+  document.getElementById("vKokoro").classList.toggle("hidden", e !== "kokoro");
   document.getElementById("vEleven").classList.toggle("hidden", e !== "elevenlabs");
 }
 
@@ -964,6 +973,9 @@ async function saveVoiceConfig() {
   if (engine === "edge") {
     tts.edge_voice = document.getElementById("vEdgeVoice").value;
     tts.edge_rate = document.getElementById("vEdgeRate").value;
+  } else if (engine === "kokoro") {
+    tts.kokoro_voice = document.getElementById("vKokoroVoice").value;
+    tts.kokoro_speed = parseFloat(document.getElementById("vKokoroSpeed").value) || 1.0;
   } else if (engine === "minimax") {
     tts.minimax_voice = document.getElementById("vMiniVoice").value;
   } else {

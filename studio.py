@@ -49,6 +49,7 @@ DEFAULT_TARGETS = {"movie_recap": "10:00", "show_recap": "10:00", "nba_minidoc":
 
 ENGINES = [
     ("edge", "Edge-TTS (free, unlimited)"),
+    ("kokoro", "Kokoro (free, local, offline)"),
     ("elevenlabs", "ElevenLabs (multi-key, premade voices)"),
     ("minimax", "MiniMax (multi-key, speech-2.6-hd)"),
 ]
@@ -57,6 +58,14 @@ EDGE_VOICES = [
     ("en-US-GuyNeural", "Guy (natural / documentary)"),
     ("en-US-EricNeural", "Eric (deep / serious)"),
     ("en-US-JennyNeural", "Jenny (clear female narrator)"),
+]
+KOKORO_VOICES = [
+    ("af_heart", "Heart (US female, warm)"), ("af_bella", "Bella (US female, expressive)"),
+    ("af_nicole", "Nicole (US female, soft)"), ("af_sarah", "Sarah (US female, clear)"),
+    ("am_michael", "Michael (US male, narrator)"), ("am_fenrir", "Fenrir (US male, deep)"),
+    ("am_adam", "Adam (US male, plain)"), ("am_puck", "Puck (US male, lively)"),
+    ("bm_george", "George (UK male, narrator)"), ("bm_fable", "Fable (UK male, storyteller)"),
+    ("bm_lewis", "Lewis (UK male, calm)"), ("bf_emma", "Emma (UK female)"),
 ]
 MINIMAX_VOICES = [
     ("male-qn-qingse", "Male Qingse (calm & clear narrator)"),
@@ -77,6 +86,7 @@ DEFAULT_CONFIG = {
         "engine": "", "edge_voice": "en-US-ChristopherNeural", "edge_rate": "+0%",
         "elevenlabs_voice_id": "", "elevenlabs_model": "eleven_v3",
         "elevenlabs_stability": 0.5, "minimax_voice": "male-qn-qingse",
+        "kokoro_voice": "am_michael", "kokoro_speed": 1.0,
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
@@ -223,6 +233,7 @@ def tools_status():
         "ytdlp": shutil.which("yt-dlp") is not None or has_module("yt_dlp"),
         "edge_tts": has_module("edge_tts"),
         "requests": has_module("requests"),
+        "kokoro": has_module("kokoro_onnx"),
         "pillow": has_module("PIL"),
         "numpy": has_module("numpy"),
         "pymupdf": has_module("fitz"),
@@ -787,7 +798,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/bootstrap":
             return self.send_json({
                 "modules": MODULES, "engines": ENGINES,
-                "edge_voices": EDGE_VOICES, "minimax_voices": MINIMAX_VOICES,
+                "edge_voices": EDGE_VOICES, "minimax_voices": MINIMAX_VOICES, "kokoro_voices": KOKORO_VOICES,
                 "default_targets": DEFAULT_TARGETS, "default_project": DEFAULT_PROJECT,
                 "default_config": DEFAULT_CONFIG, "tools": tools_status(),
             })
@@ -912,6 +923,8 @@ class Handler(BaseHTTPRequestHandler):
         # refresh the module-specific Claude prompt if it changed
         chosen = "PASTE_THIS_TO_CLAUDE_%s.txt" % new.get("module", "movie_recap")
         chosen_path = os.path.join(d, chosen)
+        if not os.path.isfile(chosen_path):          # project was made as another module: take it from _template
+            chosen_path = os.path.join(TEMPLATE, chosen)
         if os.path.isfile(chosen_path):
             shutil.copyfile(chosen_path, os.path.join(d, "PASTE_THIS_TO_CLAUDE.txt"))
         return self.send_json({"ok": True})

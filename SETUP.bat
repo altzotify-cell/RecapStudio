@@ -10,8 +10,8 @@ if not defined PY goto nopython
 %PY% --version
 
 echo.
-echo [2/3] Installing Python packages (requests, edge-tts, yt-dlp, pillow, numpy, pymupdf)...
-%PY% -m pip install --upgrade requests edge-tts yt-dlp pillow numpy pymupdf
+echo [2/3] Installing Python packages (requests, edge-tts, yt-dlp, pillow, numpy, pymupdf, kokoro-onnx)...
+%PY% -m pip install --upgrade requests edge-tts yt-dlp pillow numpy pymupdf kokoro-onnx soundfile
 if errorlevel 1 goto pipfail
 
 echo.
