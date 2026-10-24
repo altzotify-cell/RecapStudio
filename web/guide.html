@@ -56,7 +56,9 @@
   <a href="#story">NBA story</a>
   <a href="#real">Real story</a>
   <a href="#ranking">Ranking</a>
+  <a href="#comic">Comic / manga</a>
   <a href="#voice">Voices</a>
+  <a href="#videopad">VideoPad</a>
   <a href="#premiere">Premiere</a>
   <a href="#fix">Problems</a>
 </nav>
@@ -189,6 +191,37 @@
 </ol>
 <div class="tip"><b>Tip:</b> to ask for a longer #1, tell Claude to give the winner two segments.</div>
 
+<!-- ============================ COMIC ============================ -->
+<h2 id="comic">8. Comic / manga recap</h2>
+<p class="muted">A narrated retelling of a comic, manga or manhwa. A virtual camera zooms, pans and swipes across the panels.</p>
+<div class="meta"><span class="tag">Default length 8:00</span><span class="tag">Source: .cbz, .cbr or .pdf</span><span class="tag g">Can finish as a ready mp4</span></div>
+
+<ol class="steps">
+  <li><b class="t">＋ New project → Comic / manga recap</b>Name it after the comic. Pick a style (<b>retell</b>, <b>commentary</b> or <b>mixed</b>) and the <b>reading direction</b>: left to right for western comics and manhwa, right to left for Japanese manga. You can change it later in Settings.</li>
+  <li><b class="t">Add the comic file</b>Comic tab → <b>⬆ Upload comic</b>, or click 📂 Open folder and drag the file into the project's main folder. Accepted: <code>.cbz</code>, <code>.cbr</code>, <code>.pdf</code>, or a <code>.zip</code> of page images. Several files (issues) are joined in name order and pages are numbered continuously.</li>
+  <li><b class="t">Run steps → Import comic / manga</b>Unpacks every page into <code>pages/</code>, and writes the PDF(s) for Claude into <code>comic_review/</code>, 30 pages per PDF. Each page is clean artwork with a "PAGE N" header and a thin ruler grid (0.0 to 1.0) so Claude can read panel positions off it. <b>Claude decides what a panel is.</b>
+    <div class="note"><b>.cbr won't open?</b> Rename it to <code>.cbz</code> (many are really zip files), or install 7-Zip and run the step again. A PDF needs the <code>pymupdf</code> package, which SETUP.bat installs.</div></li>
+  <li><b class="t">Check a few shots after the first build</b>Claude marks each panel as a box (fractions of the page). A box is snapped to the real panel edges when it is close, but if a shot cuts off art, ask Claude to redo that segment's box, or edit the <code>box</code> numbers in the Script tab. Prefer script-found numbered panels? Set <code>"panel_mode": "auto"</code> in <code>config.json</code> under <code>comic</code>, tick Force and import again.</li>
+  <li><b class="t">Get the script from Claude</b>Do the hand-off above, but attach <b>one PDF per message</b>. Claude replies with segments like <code>{"page":3,"focus":[{"box":[0.05,0.40,0.52,0.71]}],"motion":"push_in","narration":"..."}</code>. For a long comic, send PDF part 2 in the same chat ("continue the ids"), then join the <code>youtube</code> lists into one before importing.</li>
+  <li><b class="t">Import the JSON</b>Script tab → paste it → Save. Segments that point at a page or panel that does not exist show as slates, so fix those in the JSON.</li>
+  <li><b class="t">Voice tab</b>Pick an engine and voice, Save, <b>Preview 3 segments</b>, then <b>Generate</b>. Each picture is cut to the length of its narration, so changing the narration changes the shot length. Only changed segments are re-voiced.</li>
+  <li><b class="t">Run steps → Build full video</b>Produces <code>recap_final.mp4</code> with the camera moves. This is the slowest step: roughly real time to 2× real time per minute of video on one CPU core, and unchanged clips are skipped on re-runs.</li>
+  <li><b class="t">Or edit it yourself (optional)</b>Run <b>Build VideoPad project</b> or <b>Build Premiere XML</b> instead. The camera moves are already baked into each clip in <code>clips/</code>, so keep that folder where it is.</li>
+  <li><b class="t">Captions and TikTok (optional)</b><b>Build subtitles</b> writes <code>recap_subtitles.srt</code>. For shorts, ask Claude for a <code>tiktok</code> section (same page and focus values) and run <b>Build TikTok</b>. The camera re-frames every panel for 9:16 automatically.</li>
+</ol>
+
+<h3>What Claude can put in each segment</h3>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>page</code></td><td>Page number from the PDF header.</td></tr>
+  <tr><td><code>focus</code></td><td><code>[{"box":[x0,y0,x1,y1]}]</code> one panel or region, as fractions of the page · several boxes = glide across them in order · <code>["page"]</code> whole page. (Panel numbers like <code>[2]</code> only work in <code>auto</code> mode.)</td></tr>
+  <tr><td><code>motion</code></td><td><code>push_in</code>, <code>pull_out</code>, <code>drift</code>, <code>still</code>, <code>pan_left/right/up/down</code>, <code>shake</code> (impacts). Default <code>auto</code> mixes them.</td></tr>
+  <tr><td><code>enter</code></td><td><code>cut</code>, <code>fade</code>, <code>pop</code>, <code>slide_left/right/up/down</code>. Default <code>auto</code>: a swipe on a page turn or toward the next panel.</td></tr>
+  <tr><td><code>zoom</code>, <code>anchor</code></td><td>Zoom strength (1.12 default) and where a push-in aims (<code>left</code>, <code>top-right</code>, ...).</td></tr>
+</table>
+<div class="tip"><b>Tip:</b> Settings → Render config has the camera defaults for this module: zoom, swipe length, what happens on a new page, and pages per PDF. Lower the pages per PDF if Claude refuses a big file.</div>
+<div class="warn"><b>Heads-up:</b> like the other modules, the mp4 doesn't burn in captions. They appear in the Premiere XML and the .srt.</div>
+
 <!-- ============================ VOICES ============================ -->
 <h2 id="voice">Choosing a voice</h2>
 <table>
@@ -203,6 +236,14 @@
   <li>A name pronounced wrong? Have Claude respell it for the voice and keep the real spelling in the segment's <code>subtitle</code> field, so captions stay correct.</li>
   <li>Edit a line and Generate again: only changed segments are re-voiced. <b>Regenerate all</b> redoes everything.</li>
 </ul>
+
+<h2 id="videopad">Opening it in VideoPad</h2>
+<ol class="steps">
+  <li><b class="t">Run steps → Build VideoPad project</b> Writes <code>videopad_project.vpj</code> next to the XML, with the same timeline.</li>
+  <li><b class="t">File → Open Project</b> and pick it. VideoPad warns that the file "may be damaged" - that is expected, click <b>Try Load</b> (it can appear more than once).</li>
+  <li><b class="t">If it will not open</b> run <b>Build VideoPad project (simple)</b> instead: picture + voice only (V1 and A1), no graphics, original sound or music.</li>
+</ol>
+<p class="muted">Tracks: V1 footage, V2 number/caption graphics, A1 voice-over, A2 original sound, A3 music. Chapter markers are not carried over (use <code>chapters.txt</code>). Keep <code>clips/</code>, <code>clips_av/</code>, <code>gfx/</code> and <code>audio_trim/</code> where they are.</p>
 
 <h2 id="premiere">Opening it in Premiere</h2>
 <ol class="steps">

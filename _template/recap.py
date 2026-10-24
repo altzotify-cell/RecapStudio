@@ -8,10 +8,12 @@ Steps:
   subs      Extract embedded subtitle tracks         -> subs/
   index     Contact sheets for EVERY file in footage/ -> sheets/
   sheets    Contact sheets for need_visual segments  -> sheets/
+  comic     Import a comic/manga (.cbz .cbr .pdf) -> pages/, numbered panels, comic_review/*.pdf for Claude
   collect   Guided footage collection (yt-dlp / drag files) -> footage/, images/
   tts       Generate narration audio                 -> audio/
   review    Export narration to review_sheet.csv (or --import edits back)
   premiere  Cut clips + build multi-track Premiere XML -> premiere_sequence.xml
+  videopad  Same timeline as a VideoPad project     -> videopad_project.vpj (--simple: V1+A1 only)
   video     Cut clips + join into ONE finished mp4   -> recap_final.mp4
   srt       Subtitles (+ on-screen text .srt)        -> recap_subtitles.srt
   tiktok    Build vertical 9:16 TikTok parts         -> tiktok_out/
@@ -81,10 +83,11 @@ MODULES = [
     ("nba_story", "NBA story        (shorter, hook + arc)"),
     ("real_story", "Real story       (mostly stills, news clips)"),
     ("ranking", "Ranking / top-N  (countdown with number graphics)"),
+    ("comic_recap", "Comic / manga recap (.cbz .cbr .pdf -> panels, zooms + swipes)"),
 ]
-RECAP_MODULES = ("movie_recap", "show_recap")
+RECAP_MODULES = ("movie_recap", "show_recap", "comic_recap")
 DEFAULT_TARGETS = {"movie_recap": "10:00", "show_recap": "10:00", "nba_minidoc": "8:00",
-                   "nba_story": "3:00", "real_story": "6:00", "ranking": "6:00"}
+                   "nba_story": "3:00", "real_story": "6:00", "ranking": "6:00", "comic_recap": "8:00"}
 
 DEFAULT_CONFIG = {
     "fps": 24,
@@ -105,6 +108,18 @@ DEFAULT_CONFIG = {
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
+    "comic": {
+        "panel_mode": "claude",   # claude = Claude decides the panels (boxes in segments.json) | auto = script finds + numbers them
+        "snap": True,             # claude mode: nudge Claude's box edges onto the real panel edges when they nearly match
+        "pdf_pages": 30,          # pages per PDF part you give to Claude
+        "review_height": 1700,    # pixel height of the review pages in that PDF
+        "annotate": True,         # draw panel numbers on the review pages
+        "zoom": 1.12,             # default push-in strength (1.0 = none)
+        "margin": 0.04,           # air around a panel when it fills the frame
+        "enter_sec": 0.35,        # length of a swipe / fade / pop entrance
+        "page_turn": "slide",     # entrance on a new page: slide | fade | pop | cut
+        "same_panel_move": "slide",  # next panel on the same page: slide (toward it) | cut
+    },
 }
 
 DEFAULT_PROJECT = {
@@ -118,6 +133,7 @@ DEFAULT_PROJECT = {
     "fact_check": "off",
     "music": False,
     "captions": True,
+    "reading": "ltr",           # comic_recap: ltr (western) | rtl (manga)
 }
 
 
@@ -434,6 +450,8 @@ def seg_media(seg, default_vid):
     """Decides where a segment's picture comes from.
     -> {"kind": video|image|slate, "file", "start", "avail", "why"}"""
     sid = seg.get("id", "?")
+    if MODULE == "comic_recap" and any(seg.get(k) is not None for k in ("page", "focus", "panel", "panels")):
+        return comic_media(seg)
     # 1. a still image
     if seg.get("image"):
         f = find_in(seg["image"], IMAGES_DIR, FOOTAGE_DIR, ".")
@@ -715,6 +733,10 @@ def step_init(args):
             ("retell", "Retell      (what happens, scene by scene)"),
             ("commentary", "Commentary  (analysis: themes, mistakes, meaning)"),
             ("mixed", "Mixed       (retell + short analysis beats)")], 1)
+    if p["module"] == "comic_recap":
+        p["reading"] = ask_choice("Reading direction of the comic:", [
+            ("ltr", "Left to right  (western comics, manhwa, webtoons)"),
+            ("rtl", "Right to left  (Japanese manga)")], 1)
     p["target_length"] = ask_text("Target length of the final video (e.g. 8:00, or minutes; blank = module default)",
                                   str(p.get("target_length") or ""))
     p["platform"] = ask_choice("Main platform:", [("youtube", "YouTube"), ("tiktok", "TikTok"),
@@ -765,6 +787,9 @@ def make_sheet(file, start, dur, cols, rows, width, out, stamp=True):
 
 
 def step_sheets(args):
+    if MODULE == "comic_recap":
+        print("Comic projects do not need contact sheets: the numbered PDF from 'Import comic' does that job.")
+        return
     need("ffmpeg", "ffprobe")
     jpath = find_json(args.json)
     data = load_data(jpath)
@@ -1951,6 +1976,8 @@ def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, lab
     cache = Cache(os.path.join(clips_dir, "_cache.json"))
     acache = Cache(os.path.join(TRIM_DIR, "_cache.json"))
     dv = default_video()
+    if MODULE == "comic_recap":
+        comic_prepare(segments)
     print(f"Building {len(segments)} {label}"
           + (f" (source: {dv})" if dv else "") + f" at {W}x{H} {fps}fps, fill={fill}...\n")
     items = []
@@ -1983,6 +2010,10 @@ def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, lab
                     key = f"image|{file_sig(m['file'])}|{frames}|{fps}|{W}x{H}|v3"
                     drawfn = lambda: render_image_clip(m, frames, W, H, fps, clip)
                     note = "still image, slow zoom"
+                elif m["kind"] == "comic":
+                    key = f"comic|{comic_key(seg, m)}|{frames}|{fps}|{W}x{H}"
+                    drawfn = lambda: render_comic_clip(m, seg, frames, W, H, fps, clip)
+                    note = comic_note(seg, m)
                 else:
                     stext = json.dumps(seg.get("shot") or {}, sort_keys=True) + m.get("why", "")
                     key = f"slate|{h8(stext)}|{sid}|{frames}|{fps}|{W}x{H}|v3"
@@ -2224,6 +2255,353 @@ def write_premiere_xml(items, music):
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n' +
                 ET.tostring(root, encoding="unicode"))
     return total, markers
+
+
+# ====================================================================
+# STEP 4D: VideoPad project (.vpj)
+#   Same timeline as the Premiere XML, written in NCH VideoPad's own project format.
+#   Format notes + the proof it was built from: videopad-agent-pipeline / docs/vpj-format-findings.md
+#   V1 footage | V2 number & caption graphics | A1 voice-over | A2 original audio | A3 music
+#   --simple: V1 + A1 only, picture and voice muxed into one file per segment.
+# ====================================================================
+VPJ_OUT = "videopad_project.vpj"
+VPJ_AV_DIR = "clips_av"          # --simple: picture + voice muxed per segment
+VPJ_FIRST_HANDLE = 3382          # hindex of the known-good template; new objects are numbered from here
+
+# Fixed lines copied verbatim from a project VideoPad itself wrote (NCH VideoPad 8.91). The Computer_FilePath
+# inside the export blob is the only value this writer changes: it sets the default export folder.
+VPJ_EXPORT_BLOB = (
+    "Type=2SubtitlesExport=1&Computer_Preset=Default&Computer_FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmov"
+    "ie.mp4&Portable_Preset=AppleiPhone6S_6SP&Portable_FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmovie.mp4&"
+    "360_Preset=Default&360_FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmovie.mp4&Disc_Name=DiscName&Disc_Ima"
+    "gePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmydvd.iso&Disc_IDDrive=255&Disc_DVD_NTSC=0&Disc_DVD_Widescreen"
+    "=1&Disc_DVD_AutoBitrate=1&Disc_DVD_AverageBitrate=4000&Disc_DVD_MaximumBitrate=9000&Disc_DVD_AudioBi"
+    "trate=96&Disc_DVD_Data_Preset=Widescreen%20TV&Disc_Bluray_Data_Preset=Widescreen%20TV&ImageSequence_"
+    "FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmovie&ImageSequence_Format=0&ImageSequence_JPG_Quality=85&Im"
+    "ageSequence_Width=1024&ImageSequence_Height=576&Upload_FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmovie"
+    ".mp4&Upload_DeleteFile=1&YouTube_Preset=YouTube%20720p&YouTube_FrameRate=30.000000&YouTube_ForceFixe"
+    "dFrameRate=0&Youtube_Title=&Youtube_Description=&Youtube_CategoryID=&Youtube_Keywords=&Youtube_Priva"
+    "cy=0&Flickr_Title=&Flickr_Description=&Flickr_Tags=&Flickr_Safety=1&Flickr_Public=1&Flickr_Friend=1&"
+    "Flickr_Family=1&Flickr_Hidden=0&Vimeo_Title=&Vimeo_Resolution=&Vimeo_Description=&Vimeo_FrameRate=30"
+    ".000000&Vimeo_IsAutoDetectedFrameRate=1&Vimeo_Privacy=0&Dropbox_Preset=720p&Dropbox_FilePath=C%3A%5C"
+    "Users%5Cuser%5CVideos%5Cmovie.mp4&GoogleDrive_Preset=720p&GoogleDrive_FilePath=C%3A%5CUsers%5Cuser%5"
+    "CVideos%5Cmovie.mp4&OneDrive_Preset=720p&OneDrive_FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmovie.mp4&"
+    "Stereoscopic_Preset=Widescreen%20TV&Stereoscopic_FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmovie.mp4&S"
+    "tereoscopic_StereoFormat=7&Stereoscopic_ConvertTo3D=1"
+)
+VPJ_EDITOUT = (
+    "EditOutput_Settings=-1&EditOutput_Resize=0&EditOutput_ChangeFramerate=0&EditOutput_ForceFixedFramera"
+    "te=0&EditOutput_ResizeType=0&EditOutput_Width=768&EditOutput_Height=576&EditOutput_ResizeKeepRatio=0"
+    "&EditOutput_Framerate=30.000000"
+)   # the template line ends in a lone CR; it is re-added when writing
+
+VPJ_EXPORT_DEFAULT_PATH = "Computer_FilePath=C%3A%5CUsers%5Cuser%5CVideos%5Cmovie.mp4"
+VPJ_SEQ_CACHE = "Seq9_1792790493_18467"   # template value; VideoPad re-derives it
+
+
+def vpj_q(s):
+    """URL-encode the way .vpj files do: C:\\Users\\a b -> C%3A%5CUsers%5Ca%20b ('.', '_', '-' stay)."""
+    return urllib.parse.quote(str(s), safe="")
+
+
+def vpj_ms(frames, fps):
+    """Frame count -> milliseconds. Always converted from the running total so seams never drift."""
+    return int(round(frames * 1000.0 / fps))
+
+
+def vpj_media_lines(h, path, dur_ms, kind, h_pair=None, ctime=None, name=None):
+    """Bin records. 'pair' = file with picture AND sound (two linked records, exactly as VideoPad writes
+    them); 'video' / 'audio' = single-stream file (the same record without the link fields)."""
+    name, p = vpj_q(name or os.path.basename(path)), vpj_q(path)
+    ctime = int(ctime or time.time())
+    thumb = 4500 if dur_ms > 4500 else dur_ms // 2     # 4500 = the placeholder VideoPad writes
+    out = []
+    if kind in ("pair", "audio"):
+        link = f"&hlinked={h_pair}" if kind == "pair" else ""
+        had = "&hadlinkedvideo=1" if kind == "pair" else ""
+        out.append(f"h={h}&type=5&name={name}&path={p}&note=&creationtime={ctime}&hfolder=7{link}"
+                   f"&in=0&out={dur_ms}{had}&thumbpos={thumb}&soundstreamindex=-1&isbackgroundsound=0")
+    if kind in ("pair", "video"):
+        hv = h_pair if kind == "pair" else h
+        link = f"&hlinked={h}" if kind == "pair" else ""
+        had = "&hadlinkedaudio=1" if kind == "pair" else ""
+        out.append(f"h={hv}&type=3&sphen=0&sphho=0&sphve=0&name={name}&path={p}&note=&creationtime={ctime}"
+                   f"&stereoformat=0&stereostretch=0&hfolder=6{link}&in=0&out={dur_ms}&thumb={thumb}{had}"
+                   f"&thumbpos={thumb}")
+    return out
+
+
+def vpj_clip_line(h, media_h, name, offset, tin, tout, track_h, linked_h=None):
+    link = f"&hlinked={linked_h}" if linked_h else ""
+    return (f"h={h}&type=7&sphen=0&sphho=0&sphve=0&horiginalclip={media_h}&name={vpj_q(name)}"
+            f"&offset={offset}&in={tin}&out={tout}{link}&fadeinduration=0&thumbpos=4500"
+            f"&tlstart=0&tlend=0&tlstartoff=0&tlendoff=0&htrack={track_h}")
+
+
+def vpj_chain_line(h, mute=0):
+    return (f"size=0&fadepoints=0&speedchangef=1.000000&audiopitchchange=0&voll=0&volr=0"
+            f"&mute={mute}&hclip={h}")
+
+
+def assemble_vpj(seq_name, total_ms, n_vtracks, n_atracks, media, clips, export_path=None):
+    """Build the text of a .vpj.
+
+    media : list of {"key", "path", "dur", "kind": pair|video|audio, "ctime"?, "name"?}
+    clips : list of {"media": key, "v": video-track number (1-based) or None, "a": audio-track number or None,
+            "offset": ms on the timeline, "in": ms, "out": ms, "name"?}
+    A 'pair' clip with both "v" and "a" is written as the linked picture+sound pair VideoPad makes.
+    The trailing checksum is left stale on purpose: VideoPad then shows its 'Damaged File' prompt and
+    'Try Load' opens the project untouched (the hash is a corruption warning, not a lock)."""
+    nxt = [VPJ_FIRST_HANDLE]
+
+    def new():
+        nxt[0] += 1
+        return nxt[0] - 1
+
+    SEQ, SUBT = 9, 10
+    # tracks: audio tracks first, then video tracks, as the template lists them; track 1 reuses 11 / 12
+    atr = [11] + [new() for _ in range(n_atracks - 1)]
+    vtr = [12] + [new() for _ in range(n_vtracks - 1)]
+    track_lines = []
+    for i, h in enumerate(atr, 1):
+        track_lines.append(f"h={h}&type=2&name=Audio%20Track%20{i}&output=1&solo=0&volume=100&pan=0&collapsed0=0"
+                           f"&collapsed1=0&collapsed2=1&collapsed3=0&collapsed4=0&collapsed5=0&collapsed6=0"
+                           f"&collapsed7=0&locked=0&hsequence={SEQ}")
+    for i, h in enumerate(vtr, 1):
+        track_lines.append(f"h={h}&type=1&name=Video%20Track%20{i}&output=1&solo=0&collapsed0=0&collapsed1=0"
+                           f"&collapsed2=0&collapsed3=0&collapsed4=1&collapsed5=0&collapsed6=0&collapsed7=0"
+                           f"&locked=0&hsequence={SEQ}")
+
+    # bin: audio record first, then its picture record (the order VideoPad writes them)
+    mh, media_lines, chain_h = {}, [], []
+    for m in media:
+        h = new()
+        hp = new() if m["kind"] == "pair" else None
+        kind = m["kind"]
+        media_lines += vpj_media_lines(h, m["path"], m["dur"], kind, hp, m.get("ctime"), m.get("name"))
+        if kind == "pair":
+            mh[m["key"]] = {"a": h, "v": hp}
+        elif kind == "audio":
+            mh[m["key"]] = {"a": h}
+        else:
+            mh[m["key"]] = {"v": h}
+        chain_h += [x for x in (h, hp) if x]
+
+    clip_lines, clip_h = [], []
+    for c in clips:
+        m = mh[c["media"]]
+        src = next(x for x in media if x["key"] == c["media"])
+        nm = c.get("name") or src.get("name") or os.path.basename(src["path"])
+        hv = new() if c.get("v") else None
+        ha = new() if c.get("a") else None
+        both = hv and ha
+        if ha:
+            clip_lines.append(vpj_clip_line(ha, m["a"], nm, c["offset"], c["in"], c["out"],
+                                            atr[c["a"] - 1], hv if both else None))
+        if hv:
+            clip_lines.append(vpj_clip_line(hv, m["v"], nm, c["offset"], c["in"], c["out"],
+                                            vtr[c["v"] - 1], ha if both else None))
+        clip_h += [x for x in (ha, hv) if x]
+
+    export = VPJ_EXPORT_BLOB
+    if export_path:
+        export = export.replace(VPJ_EXPORT_DEFAULT_PATH, "Computer_FilePath=" + vpj_q(export_path))
+
+    seq = (f"h={SEQ}&type=6&sphen=0&sphho=0&sphve=0&name={vpj_q(seq_name)}&note=&hfolder=5&duration={total_ms}"
+           f"&in=0&out={total_ms}&thumb=1440000&seqcachename={VPJ_SEQ_CACHE}&thumbpos=1440000&timelinepos=0"
+           f"&selected=1")
+    chains = [vpj_chain_line(h) for h in clip_h] + [vpj_chain_line(SEQ)] + [vpj_chain_line(h) for h in chain_h]
+    L = ["version=11", f"hindex={nxt[0]}", "folders=4",
+         "h=8&name=Images&hfolder=0&open=0&type=2&foldertype=4&selected=0",
+         "h=7&name=Audio%20Files&hfolder=0&open=0&type=5&foldertype=2&selected=0",
+         "h=6&name=Video%20Files&hfolder=0&open=1&type=3&foldertype=1&selected=1",
+         "h=5&name=Sequences&hfolder=0&open=0&type=6&foldertype=3&selected=0",
+         f"clips={1 + len(media_lines)}&relativepaths=0", seq] + media_lines
+    L += [f"tracks={len(track_lines)}"] + track_lines
+    L += [f"trackclips={len(clip_lines)}"] + clip_lines
+    L += ["subtitletracks=1", f"h={SUBT}&name=&subtitlechannels=0&hsequence={SEQ}", "subtitleclips=0",
+          "transitions=0", f"effectchains={len(chains)}"] + chains
+    L += ["groups=0", "bookmarks=0", export, VPJ_EDITOUT + "\r", "wizardused=0", "revision=565488",
+          "checksum=" + "0" * 64]
+    return "\n".join(L) + "\n"
+
+
+def check_vpj(text):
+    """Structural self-check of a .vpj: counts match, every handle that is referenced exists, links are
+    mutual, clips stay inside their source, the sequence is exactly as long as its last clip. Returns a
+    list of problems (empty = consistent)."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    bad, sec, i = [], {}, 0
+
+    def q(line):
+        out = {}
+        for part in line.split("&"):
+            k, _, v = part.partition("=")
+            out[k] = v
+        return out
+
+    if not lines or lines[0] != "version=11":
+        bad.append("first line is not version=11")
+    while i < len(lines):
+        k, _, v = lines[i].partition("=")
+        if k in ("folders", "tracks", "trackclips", "subtitletracks", "subtitleclips", "transitions",
+                 "effectchains", "groups", "bookmarks"):
+            n = int(v)
+            sec[k] = [q(x) for x in lines[i + 1:i + 1 + n]]
+            if len(sec[k]) != n:
+                bad.append(f"{k}={n} but the file ends after {len(sec[k])} lines")
+            i += 1 + n
+        elif k == "clips":
+            n = int(v.split("&")[0])
+            sec[k] = [q(x) for x in lines[i + 1:i + n + 1]]
+            if len(sec[k]) != n:
+                bad.append(f"clips={n} but the file ends after {len(sec[k])} lines")
+            i += 1 + n
+        else:
+            i += 1
+    for need in ("clips", "tracks", "trackclips", "effectchains"):
+        if need not in sec:
+            bad.append(f"section '{need}' is missing")
+    if bad:
+        return bad
+    seqs = [c for c in sec["clips"] if c.get("type") == "6"]
+    media = {c["h"]: c for c in sec["clips"] if c.get("type") in ("3", "5")}
+    tracks = {t["h"]: t for t in sec["tracks"]}
+    if len(seqs) != 1:
+        bad.append(f"expected 1 sequence record, found {len(seqs)}")
+    handles = [c["h"] for c in sec["clips"]] + list(tracks) + [c["h"] for c in sec["trackclips"]]
+    if len(set(handles)) != len(handles):
+        bad.append("a handle is used twice")
+    end = 0
+    byh = {c["h"]: c for c in sec["trackclips"]}
+    for c in sec["trackclips"]:
+        m = media.get(c.get("horiginalclip"))
+        t = tracks.get(c.get("htrack"))
+        if m is None:
+            bad.append(f"clip {c['h']}: horiginalclip {c.get('horiginalclip')} is not in the bin")
+            continue
+        if t is None:
+            bad.append(f"clip {c['h']}: htrack {c.get('htrack')} does not exist")
+            continue
+        if (t["type"] == "1") != (m["type"] == "3"):
+            bad.append(f"clip {c['h']}: a {'video' if m['type'] == '3' else 'audio'} source sits on a "
+                       f"{'video' if t['type'] == '1' else 'audio'} track")
+        tin, tout, off = int(c["in"]), int(c["out"]), int(c["offset"])
+        if not (0 <= tin < tout <= int(m["out"])):
+            bad.append(f"clip {c['h']}: trim {tin}-{tout} is outside its source (0-{m['out']})")
+        end = max(end, off + tout - tin)
+        if c.get("hlinked"):
+            o = byh.get(c["hlinked"])
+            if o is None or o.get("hlinked") != c["h"]:
+                bad.append(f"clip {c['h']}: link to {c['hlinked']} is not mutual")
+    for m in media.values():
+        if m.get("hlinked") and media.get(m["hlinked"], {}).get("hlinked") != m["h"]:
+            bad.append(f"bin item {m['h']}: link to {m['hlinked']} is not mutual")
+    chains = [c.get("hclip") for c in sec["effectchains"]]
+    want = [c["h"] for c in sec["trackclips"]] + [seqs[0]["h"]] + list(media)
+    if sorted(chains) != sorted(want):
+        bad.append("effectchains do not cover exactly the clips, the sequence and the bin items")
+    if seqs and (int(seqs[0]["duration"]) != end or seqs[0]["out"] != seqs[0]["duration"]):
+        bad.append(f"sequence is {seqs[0]['duration']} ms but its last clip ends at {end} ms")
+    return bad
+
+
+def write_vpj(path, text):
+    # newline="\n": the file is LF-terminated like VideoPad's own (Windows must not turn it into CRLF)
+    with open(path, "w", encoding="ascii", newline="\n") as f:
+        f.write(text)
+
+
+def vpj_mux_av(it, out_dir=VPJ_AV_DIR):
+    """--simple: picture + voice in ONE file so VideoPad sees an ordinary video-with-sound source."""
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, it["id"] + ".mp4")
+    cache = Cache(os.path.join(out_dir, "_cache.json"))
+    key = f"{file_sig(it['video_file'])}|{file_sig(it['audio_file'])}|{it['frames']}|{FPS}|v1"
+    if not cache.fresh(it["id"], key, out):
+        ffrun(["ffmpeg", "-y", "-loglevel", "error", "-i", it["video_file"], "-i", it["audio_file"],
+               "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+               "-t", f"{it['frames'] / FPS:.6f}", "-movflags", "+faststart", out], out)
+        cache.set(it["id"], key)
+    return os.path.abspath(out)
+
+
+def write_videopad_project(items, music, simple=False, out=VPJ_OUT):
+    """Same timeline as write_premiere_xml, as a .vpj. Returns (total_ms, problems)."""
+    total_frames = sum(i["frames"] for i in items)
+    total_ms = vpj_ms(total_frames, FPS)
+    seq_name = os.path.basename(ROOT) or "Recap Sequence"
+    media, clips = [], []
+    has_gfx = (not simple) and any(i["gfx_file"] for i in items)
+    has_orig = (not simple) and any(i["orig_file"] for i in items)
+    has_music = (not simple) and bool(music)
+    cur = 0
+    for idx, it in enumerate(items):
+        off, end = vpj_ms(cur, FPS), vpj_ms(cur + it["frames"], FPS)
+        n = end - off
+        if simple:
+            f = vpj_mux_av(it)
+            media.append({"key": f"s{idx}", "path": f, "dur": n, "kind": "pair"})
+            clips.append({"media": f"s{idx}", "v": 1, "a": 1, "offset": off, "in": 0, "out": n})
+        else:
+            media.append({"key": f"v{idx}", "path": it["video_file"], "dur": n, "kind": "video"})
+            media.append({"key": f"a{idx}", "path": it["audio_file"], "dur": n, "kind": "audio"})
+            clips.append({"media": f"v{idx}", "v": 1, "a": None, "offset": off, "in": 0, "out": n})
+            clips.append({"media": f"a{idx}", "v": None, "a": 1, "offset": off, "in": 0, "out": n})
+            if has_gfx and it["gfx_file"]:
+                media.append({"key": f"g{idx}", "path": it["gfx_file"], "dur": n, "kind": "video"})
+                clips.append({"media": f"g{idx}", "v": 2, "a": None, "offset": off, "in": 0, "out": n})
+            if has_orig and it["orig_file"]:
+                media.append({"key": f"o{idx}", "path": it["orig_file"], "dur": n, "kind": "audio"})
+                clips.append({"media": f"o{idx}", "v": None, "a": 2, "offset": off, "in": 0, "out": n})
+        cur += it["frames"]
+    if has_music:
+        media.append({"key": "music", "path": music, "dur": total_ms, "kind": "audio"})
+        clips.append({"media": "music", "v": None, "a": 2 + (1 if has_orig else 0), "offset": 0,
+                      "in": 0, "out": total_ms, "name": "music bed"})
+    n_v = 2 if has_gfx else 1
+    n_a = 1 + (1 if has_orig else 0) + (1 if has_music else 0)
+    text = assemble_vpj(seq_name, total_ms, n_v, n_a, media, clips,
+                        export_path=os.path.abspath(os.path.splitext(out)[0] + ".mp4"))
+    problems = check_vpj(text)
+    write_vpj(out, text)
+    return total_ms, problems
+
+
+def step_videopad(args):
+    data = load_data(find_json(args.json))
+    segments = yt_segments(data)
+    if not segments:
+        die("No 'youtube' segments in the JSON.")
+    simple = bool(getattr(args, "simple", False))
+    items = build_items(segments, FPS, WIDTH, HEIGHT, CLIPS_DIR, CFG.get("fill", "pad"),
+                        gfx=not simple, label="segments")
+    music = None if simple else make_music_bed(sum(i["frames"] for i in items), FPS)
+    total_ms, problems = write_videopad_project(items, music, simple)
+    write_extras(items)
+    write_shot_manifest(segments, default_video())
+
+    slates = [i["id"] for i in items if i["kind"] == "slate"]
+    print(f"\nDone. '{VPJ_OUT}' written: {len(items)} segments, {fmt_mmss(total_ms / 1000)}"
+          + (" (simple: picture + voice only)." if simple else "."))
+    if problems:
+        print("[!] The project failed its own consistency check - please send this to whoever maintains the tool:")
+        for p in problems[:12]:
+            print("    -", p)
+    if slates:
+        print(f"[!] {len(slates)} placeholder slate(s) on V1 (missing footage): {', '.join(slates[:12])}"
+              + (" ..." if len(slates) > 12 else "") + "\n    Add the footage (collect step), run this again - slates are replaced.")
+    print("In VideoPad: File > Open Project > pick the .vpj (or double-click it).\n"
+          "VideoPad will say 'The provided file may be damaged' - that is expected, click Try Load (it can appear more than once).\n"
+          + ("Tracks: V1 picture | A1 voice (one file per segment)."
+             if simple else
+             "Tracks: V1 footage | V2 number/caption graphics | A1 voice | A2 original sound | A3 music."))
+    print("If VideoPad refuses the full project, run it again with 'Build VideoPad project (simple)'.")
+    print_srt_help()
+    print("Keep clips/, clips_av/, gfx/ and audio_trim/ where they are (the project stores paths, not media).")
+    reveal(".")
 
 
 def write_extras(items):
@@ -2559,15 +2937,20 @@ def status_lines(args_json=None):
     dv = default_video()
     n_foot = len([f for f in glob.glob(FOOTAGE_DIR + "/*") if f.lower().endswith(VIDEO_EXTS)]) if os.path.isdir(FOOTAGE_DIR) else 0
     n_img = len([f for f in glob.glob(IMAGES_DIR + "/*") if f.lower().endswith(IMAGE_EXTS)]) if os.path.isdir(IMAGES_DIR) else 0
-    L.append(f"Source  : {dv or 'no main video in folder'}   footage/: {n_foot} clip(s)   images/: {n_img}")
-    L.append(f"Subtitles (.srt in subs/): {len(glob.glob(SUBS_DIR + '/*.srt'))}")
+    if MODULE == "comic_recap":
+        L.append(comic_status())
+    else:
+        L.append(f"Source  : {dv or 'no main video in folder'}   footage/: {n_foot} clip(s)   images/: {n_img}")
+        L.append(f"Subtitles (.srt in subs/): {len(glob.glob(SUBS_DIR + '/*.srt'))}")
     L.append(f"Engine  : {CFG['tts']['engine'] or '-'}")
     nxt = []
     try:
         data = load_data(find_json(args_json))
     except SystemExit:
         L.append("segments.json: EMPTY - paste the JSON from Claude")
-        return L, ["Get segments.json from Claude (see PASTE_THIS_TO_CLAUDE.txt)"]
+        return L, (["Import the comic, then give Claude the PDF(s) from comic_review/ + PASTE_THIS_TO_CLAUDE.txt"]
+                   if MODULE == "comic_recap" and not comic_load_panels().get("pages")
+                   else ["Get segments.json from Claude (see PASTE_THIS_TO_CLAUDE.txt)"])
     yt, tt, segs = yt_segments(data), tiktok_parts(data), all_segments(data)
     if not segs:
         L.append("segments.json: no segments yet")
@@ -2590,6 +2973,8 @@ def status_lines(args_json=None):
              f"TikTok: {len(glob.glob(TIKTOK_OUT + '/*.mp4'))} video(s)")
     if miss and MODULE not in RECAP_MODULES:
         nxt.append("Collect footage: run the collect step (missing shots show as slates in Premiere)")
+    elif miss and MODULE == "comic_recap":
+        nxt.append(f"{len(miss)} segment(s) point at a page/panel that does not exist: {', '.join(miss[:6])} (see the slate text)")
     elif miss:
         nxt.append(f"{len(miss)} segment(s) have no footage - check 'src' / file names")
     if have < len(segs):
@@ -2618,7 +3003,7 @@ def step_check(args):
     for t in ("ffmpeg", "ffprobe"):
         print(f"  {t:<9} {'OK' if shutil.which(t) else 'MISSING  -> run SETUP.bat'}")
     print(f"  {'yt-dlp':<9} {'OK' if ytdlp_cmd() else 'MISSING  -> run SETUP.bat (only needed for the collect step)'}")
-    for mod in ("requests", "edge_tts"):
+    for mod in ("requests", "edge_tts") + (("PIL", "numpy", "fitz") if MODULE == "comic_recap" else ()):
         try:
             __import__(mod)
             print(f"  {mod:<9} OK")
@@ -2686,9 +3071,835 @@ def step_demo(args):
 
 
 # ====================================================================
+# ====================================================================
+# COMIC / MANGA RECAP  (module "comic_recap")
+#   .cbz / .cbr / .pdf  ->  pages/p001.png ...  ->  numbered panels
+#   -> comic_review/*.pdf for Claude  ->  segments point at page + panel
+#   -> a virtual camera (zoom / pan / swipe) is rendered over the panels
+# ====================================================================
+COMIC_SRC_EXTS = (".cbz", ".cbr", ".cb7", ".zip", ".rar", ".7z", ".pdf", ".epub")
+PAGES_DIR = "pages"
+PANELS_FILE = os.path.join(PAGES_DIR, "panels.json")
+REVIEW_DIR = "comic_review"
+COMIC_TMP = "_comic_tmp"
+COMIC_VER = "c1"
+COMIC_MAX_PX = 5000          # longest page side kept on disk (bigger scans are shrunk)
+_COMIC = None
+
+
+def ccfg():
+    return CFG.get("comic", {})
+
+
+def comic_need_pil():
+    try:
+        import PIL  # noqa
+        import numpy  # noqa
+    except ImportError:
+        die("The comic module needs Pillow and numpy. Run SETUP.bat again "
+            "(or:  pip install pillow numpy pymupdf).")
+
+
+# --------------------------------------------------------------------
+# 1. find + unpack the comic file
+# --------------------------------------------------------------------
+def comic_sources(override=None):
+    if override:
+        if not os.path.isfile(override):
+            die(f"Comic file not found: {override}")
+        return [override]
+    found, seen = [], set()
+    for folder in (".", "comic", FOOTAGE_DIR):
+        if not os.path.isdir(folder):
+            continue
+        for f in os.listdir(folder):
+            p = os.path.join(folder, f)
+            if (os.path.isfile(p) and f.lower().endswith(COMIC_SRC_EXTS)
+                    and os.path.abspath(p) not in seen):
+                seen.add(os.path.abspath(p))
+                found.append(p)
+    found.sort(key=lambda p: natural_key(os.path.basename(p)))
+    return found
+
+
+def comic_kind(path):
+    """Looks at the first bytes, not the extension (many .cbr files are really zips)."""
+    with open(path, "rb") as f:
+        head = f.read(8)
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    if head.startswith(b"PK"):
+        return "zip"
+    if head.startswith(b"Rar!"):
+        return "rar"
+    if head.startswith(b"7z\xbc\xaf"):
+        return "7z"
+    ext = os.path.splitext(path)[1].lower()
+    return {".pdf": "pdf", ".cbr": "rar", ".rar": "rar", ".cb7": "7z", ".7z": "7z"}.get(ext, "zip")
+
+
+def _images_under(folder):
+    out = []
+    for root, _, files in os.walk(folder):
+        if "__macosx" in root.lower():
+            continue
+        for f in files:
+            if f.lower().endswith(IMAGE_EXTS) and not f.startswith("."):
+                out.append(os.path.join(root, f))
+    out.sort(key=lambda p: natural_key(os.path.relpath(p, folder)))
+    return out
+
+
+def comic_unpack(path, tmp):
+    """-> list of image files (reading order) extracted into `tmp`."""
+    kind = comic_kind(path)
+    os.makedirs(tmp, exist_ok=True)
+    if kind == "zip":
+        import zipfile
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist()
+                     if n.lower().endswith(IMAGE_EXTS) and "__macosx" not in n.lower()
+                     and not os.path.basename(n).startswith(".")]
+            names.sort(key=natural_key)
+            out = []
+            for i, n in enumerate(names):
+                dst = os.path.join(tmp, f"{i:05d}{os.path.splitext(n)[1].lower()}")
+                with z.open(n) as s, open(dst, "wb") as o:
+                    shutil.copyfileobj(s, o)
+                out.append(dst)
+        return out
+    if kind in ("rar", "7z"):
+        tools = []
+        for exe in ("7z", "7zz", "7za"):
+            if shutil.which(exe):
+                tools.append([exe, "x", "-y", f"-o{tmp}", path])
+        w7 = r"C:\Program Files\7-Zip\7z.exe"
+        if os.path.isfile(w7):
+            tools.append([w7, "x", "-y", f"-o{tmp}", path])
+        if shutil.which("unar"):
+            tools.append(["unar", "-q", "-o", tmp, path])
+        if shutil.which("unrar"):
+            tools.append(["unrar", "x", "-y", "-inul", path, tmp + os.sep])
+        for exe in ("bsdtar", "tar"):          # Windows 10/11 ships bsdtar as tar.exe (reads RAR)
+            if shutil.which(exe):
+                tools.append([exe, "-xf", path, "-C", tmp])
+        for cmd in tools:
+            try:
+                run(cmd)
+            except OSError:
+                continue
+            files = _images_under(tmp)
+            if files:
+                return files
+        die(f"Could not open {os.path.basename(path)} ({kind.upper()}). Fixes, easiest first:\n"
+            "  1. Rename .cbr to .cbz and try again (many are really zip files).\n"
+            "  2. Install 7-Zip (winget install 7zip.7zip) and run this step again.\n"
+            "  3. Open it in a comic reader and export / print it to PDF.")
+    if kind == "pdf":
+        try:
+            import fitz  # PyMuPDF
+            out = []
+            doc = fitz.open(path)
+            for i, pg in enumerate(doc):
+                r = pg.rect
+                z = min(4.0, max(1.0, 3000.0 / max(r.width, r.height, 1)))
+                dst = os.path.join(tmp, f"{i:05d}.png")
+                pg.get_pixmap(matrix=fitz.Matrix(z, z), alpha=False).save(dst)
+                out.append(dst)
+            if out:
+                return out
+        except ImportError:
+            pass
+        if shutil.which("pdftoppm"):
+            run(["pdftoppm", "-r", "200", "-png", path, os.path.join(tmp, "pg")])
+            files = sorted(glob.glob(os.path.join(tmp, "pg*.png")), key=natural_key)
+            if files:
+                return files
+        die("Reading a PDF needs PyMuPDF.  Run SETUP.bat again (or:  pip install pymupdf).")
+    die(f"Unsupported comic file: {path}")
+
+
+def comic_save_page(src, dst):
+    from PIL import Image
+    im = Image.open(src)
+    im.load()
+    if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+        im = im.convert("RGBA")
+        flat = Image.new("RGB", im.size, (255, 255, 255))
+        flat.paste(im, mask=im.split()[3])
+        im = flat
+    else:
+        im = im.convert("RGB")
+    big = max(im.size)
+    if big > COMIC_MAX_PX:
+        f = COMIC_MAX_PX / big
+        im = im.resize((round(im.width * f), round(im.height * f)), Image.LANCZOS)
+    im.save(dst, "PNG", compress_level=3)
+    return im.size
+
+
+# --------------------------------------------------------------------
+# 2. panel detection (gutter / XY-cut) - plain numpy, no OpenCV
+# --------------------------------------------------------------------
+def _best_gap(is_gap, min_gut, min_side, frac=None, edge_min=0.30):
+    """Longest run of gutter samples with real content on both sides -> (start, end) | None.
+    With `frac` (ink fraction per line) a gutter must also be bounded by a line-like edge on both
+    sides (a panel border or dense art), so white manga panels with sparse drawings are not cut in half."""
+    n, best, i = len(is_gap), None, 0
+    while i < n:
+        if is_gap[i]:
+            j = i
+            while j < n and is_gap[j]:
+                j += 1
+            edged = (frac is None or (float(max(frac[max(0, i - 3):i])) >= edge_min
+                                      and float(max(frac[j:j + 3])) >= edge_min))
+            if j - i >= min_gut and i >= min_side and n - j >= min_side and edged:
+                if best is None or (j - i) > (best[1] - best[0]):
+                    best = (i, j)
+            i = j
+        else:
+            i += 1
+    return best
+
+
+def comic_detect(img, rtl=False):
+    """Panels as pixel boxes (x0, y0, x1, y1) in reading order."""
+    import numpy as np
+    from PIL import Image
+    W, H = img.size
+    k = 800.0 / max(W, H)
+    sw, sh = max(16, int(W * k)), max(16, int(H * k))
+    g = np.asarray(img.convert("L").resize((sw, sh), Image.BILINEAR), dtype=np.int16)
+    b = max(1, int(0.012 * max(sw, sh)))
+    border = np.concatenate([g[:b].ravel(), g[-b:].ravel(), g[:, :b].ravel(), g[:, -b:].ravel()])
+    bg = int(np.bincount((border // 4).astype(np.int64), minlength=64).argmax() * 4 + 2)
+    fg = np.abs(g - bg) > 28
+    eps = 0.010
+    min_gut = max(2, int(0.010 * max(sw, sh)))
+    min_side = max(4, int(0.05 * min(sw, sh)))
+    found = []
+
+    def cut(x0, y0, x1, y1, depth=0):
+        sub = fg[y0:y1, x0:x1]
+        if sub.size == 0:
+            return
+        ys = np.nonzero(sub.mean(axis=1) > eps)[0]
+        xs = np.nonzero(sub.mean(axis=0) > eps)[0]
+        if len(ys) == 0 or len(xs) == 0:
+            return
+        y0, y1 = y0 + int(ys[0]), y0 + int(ys[-1]) + 1
+        x0, x1 = x0 + int(xs[0]), x0 + int(xs[-1]) + 1
+        sub = fg[y0:y1, x0:x1]
+        rows, cols = sub.mean(axis=1), sub.mean(axis=0)
+        if depth < 10:
+            gh = _best_gap(rows <= eps, min_gut, min_side, rows)       # rows first = reading order
+            if gh:
+                cut(x0, y0, x1, y0 + gh[0], depth + 1)
+                cut(x0, y0 + gh[1], x1, y1, depth + 1)
+                return
+            gv = _best_gap(cols <= eps, min_gut, min_side, cols)
+            if gv:
+                parts = [(x0, y0, x0 + gv[0], y1), (x0 + gv[1], y0, x1, y1)]
+                if rtl:
+                    parts.reverse()
+                for p in parts:
+                    cut(*p, depth + 1)
+                return
+        found.append((x0, y0, x1, y1))
+
+    cut(0, 0, sw, sh)
+    keep = [(x0, y0, x1, y1) for x0, y0, x1, y1 in found
+            if (x1 - x0) >= 0.06 * sw and (y1 - y0) >= 0.05 * sh
+            and (x1 - x0) * (y1 - y0) >= 0.012 * sw * sh]
+    if not keep:
+        ys, xs = np.nonzero(fg.any(axis=1))[0], np.nonzero(fg.any(axis=0))[0]
+        keep = [(int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1)] if len(xs) and len(ys) \
+            else [(0, 0, sw, sh)]
+    out = []
+    for x0, y0, x1, y1 in keep:
+        out.append([max(0, int(x0 / k) - 2), max(0, int(y0 / k) - 2),
+                    min(W, int(math.ceil(x1 / k)) + 2), min(H, int(math.ceil(y1 / k)) + 2)])
+    return out
+
+
+# --------------------------------------------------------------------
+# 3. review images + PDFs for Claude (numbered panels)
+# --------------------------------------------------------------------
+def comic_mode():
+    return "auto" if str(ccfg().get("panel_mode", "claude")).lower() == "auto" else "claude"
+
+
+def comic_grid(v, fs):
+    """Thin 0.1-step ruler grid with labels, so Claude can read box coordinates off the page."""
+    from PIL import Image, ImageDraw, ImageFont
+    fp = find_font()
+    try:
+        small = ImageFont.truetype(fp, max(13, int(fs * 0.55))) if fp else ImageFont.load_default()
+    except Exception:
+        small = ImageFont.load_default()
+    ov = Image.new("RGBA", v.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    for i in range(1, 10):
+        x, y = round(v.width * i / 10), round(v.height * i / 10)
+        d.line((x, 0, x, v.height), fill=(0, 190, 255, 85), width=1)
+        d.line((0, y, v.width, y), fill=(0, 190, 255, 85), width=1)
+    for i in range(0, 11):
+        lab = f"{i / 10:.1f}"
+        x, y = round(v.width * i / 10), round(v.height * i / 10)
+        tw = d.textlength(lab, font=small)
+        for pos in ((min(max(x - tw / 2, 1), v.width - tw - 1), 2), (min(max(x - tw / 2, 1), v.width - tw - 1), v.height - small.size - 4)):
+            d.rectangle((pos[0] - 1, pos[1] - 1, pos[0] + tw + 1, pos[1] + small.size + 1), fill=(0, 60, 90, 215))
+            d.text(pos, lab, font=small, fill=(255, 255, 255, 255))
+        for xx in (2, v.width - tw - 3):
+            d.rectangle((xx - 1, y - small.size / 2 - 1, xx + tw + 1, y + small.size / 2 + 1), fill=(0, 60, 90, 215))
+            d.text((xx, y - small.size / 2), lab, font=small, fill=(255, 255, 255, 255))
+    return Image.alpha_composite(v.convert("RGBA"), ov).convert("RGB")
+
+
+def comic_review_image(page_no, im, panels, annotate=True, grid=False):
+    from PIL import Image, ImageDraw, ImageFont
+    max_h = int(ccfg().get("review_height", 1700))
+    s = min(1.0, max_h / im.height)
+    v = im.resize((max(1, round(im.width * s)), max(1, round(im.height * s))), Image.LANCZOS) if s < 1 else im.copy()
+    fs = max(24, int(v.height * 0.028))
+    fp = find_font()
+    try:
+        font = ImageFont.truetype(fp, fs) if fp else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+    if grid:
+        v = comic_grid(v, fs)
+    d = ImageDraw.Draw(v)
+    pink, lw = (255, 0, 153), max(3, int(v.height * 0.0025))
+    if annotate:
+        for n, (x0, y0, x1, y1) in enumerate(panels, 1):
+            r = (x0 * s, y0 * s, x1 * s - 1, y1 * s - 1)
+            d.rectangle(r, outline=pink, width=lw)
+            label = str(n)
+            tw = d.textlength(label, font=font)
+            d.rectangle((r[0], r[1], r[0] + tw + fs * 0.7, r[1] + fs * 1.35), fill=pink)
+            d.text((r[0] + fs * 0.35, r[1] + fs * 0.12), label, font=font, fill=(255, 255, 255))
+    band = int(fs * 1.9)
+    out = Image.new("RGB", (v.width, v.height + band), (20, 20, 20))
+    out.paste(v, (0, band))
+    d2 = ImageDraw.Draw(out)
+    d2.text((fs * 0.5, fs * 0.45), f"PAGE {page_no}" + (f"   ({len(panels)} panel{'s' if len(panels) != 1 else ''})" if annotate else "")
+            + ("   ruler: 0.0 - 1.0 across and down" if grid else ""),
+            font=font, fill=(255, 255, 255))
+    return out
+
+
+def comic_build_review(meta):
+    from PIL import Image
+    os.makedirs(REVIEW_DIR, exist_ok=True)
+    for f in glob.glob(os.path.join(REVIEW_DIR, "*")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    auto = comic_mode() == "auto"
+    annotate = auto and bool(ccfg().get("annotate", True))
+    per = max(5, int(ccfg().get("pdf_pages", 30)))
+    pages = meta["pages"]
+    jpgs = []
+    for i, pg in enumerate(pages):
+        progress(i, len(pages), f"Review page {pg['page']}")
+        im = Image.open(pg["file"]).convert("RGB")
+        r = comic_review_image(pg["page"], im, pg["panels"], annotate, grid=not auto)
+        jp = os.path.join(REVIEW_DIR, f"r{pg['page']:04d}.jpg")
+        r.save(jp, "JPEG", quality=84)
+        jpgs.append((pg["page"], jp))
+    pdfs = []
+    for part, start in enumerate(range(0, len(jpgs), per), 1):
+        chunk = jpgs[start:start + per]
+        name = os.path.join(REVIEW_DIR, f"comic_for_claude_part{part:02d}_p{chunk[0][0]:03d}-p{chunk[-1][0]:03d}.pdf")
+        ims = [Image.open(p) for _, p in chunk]
+        ims[0].save(name, "PDF", save_all=True, append_images=ims[1:], resolution=110.0, quality=84)
+        for x in ims:
+            x.close()
+        pdfs.append(name)
+    progress(len(pages), len(pages), "Review pages done")
+    return pdfs
+
+
+# --------------------------------------------------------------------
+# 4. the import step
+# --------------------------------------------------------------------
+def comic_load_panels():
+    global _COMIC
+    if _COMIC is None:
+        try:
+            with open(PANELS_FILE, "r", encoding="utf-8") as f:
+                _COMIC = json.load(f)
+        except Exception:
+            _COMIC = {"pages": []}
+        _COMIC["_by"] = {p["page"]: p for p in _COMIC.get("pages", [])}
+    return _COMIC
+
+
+def step_comic(args):
+    """Import a comic: unpack pages, find panels, write the numbered PDF(s) for Claude."""
+    comic_need_pil()
+    from PIL import Image
+    rtl = str(PROJECT.get("reading", "ltr")).lower() == "rtl"
+    os.makedirs(PAGES_DIR, exist_ok=True)
+    sources = comic_sources(args.file)
+    sig = [f"{os.path.basename(s)}:{os.path.getsize(s)}" for s in sources]
+    meta = None
+    if os.path.exists(PANELS_FILE):
+        try:
+            with open(PANELS_FILE, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = None
+    reuse = (meta and meta.get("pages") and not args.force
+             and (not sources or meta.get("sources") == sig)
+             and meta.get("mode", "auto") == comic_mode()
+             and all(os.path.exists(p["file"]) for p in meta["pages"]))
+    if reuse:
+        print(f"[i] Reusing the {len(meta['pages'])} imported pages (panels.json may contain your hand edits).")
+        print("    Use 'force' to import the comic again and re-detect all panels.\n")
+    else:
+        if not sources:
+            die("No comic found. Put a .cbz / .cbr / .pdf (or a .zip of page images) in this project "
+                "folder, then run this step again.")
+        for f in glob.glob(os.path.join(PAGES_DIR, "*")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        shutil.rmtree(COMIC_TMP, ignore_errors=True)
+        print("Importing:\n" + "\n".join("  " + s for s in sources) + "\n")
+        pages, no = [], 0
+        for si, src in enumerate(sources):
+            tmp = os.path.join(COMIC_TMP, str(si))
+            print(f"[{si + 1}/{len(sources)}] Unpacking {os.path.basename(src)} ({comic_kind(src).upper()}) ...")
+            files = comic_unpack(src, tmp)
+            if not files:
+                die(f"No page images found inside {os.path.basename(src)}.")
+            for fi, fpath in enumerate(files):
+                no += 1
+                progress(fi, len(files), f"{os.path.basename(src)}: page {fi + 1}/{len(files)}")
+                dst = os.path.join(PAGES_DIR, f"p{no:03d}.png")
+                try:
+                    w, h = comic_save_page(fpath, dst)
+                except Exception as e:
+                    print(f"  [!] page {fi + 1} skipped ({e})")
+                    no -= 1
+                    continue
+                im = Image.open(dst)
+                pages.append({"page": no, "file": dst.replace("\\", "/"), "w": w, "h": h,
+                              "source": os.path.basename(src), "auto": (det := comic_detect(im, rtl)),
+                              "panels": det if comic_mode() == "auto" else []})
+                im.close()
+        shutil.rmtree(COMIC_TMP, ignore_errors=True)
+        meta = {"_help": "Panels are [x0,y0,x1,y1] in pixels of the page image, in reading order. "
+                         "You can edit them by hand, then run 'Import comic' again (without force) to refresh the PDFs. "
+                         "'auto' = the script's own guess (used to snap Claude's boxes); 'panels' are used only in panel_mode auto.",
+                "reading": "rtl" if rtl else "ltr", "mode": comic_mode(), "sources": sig, "pages": pages}
+        with open(PANELS_FILE, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=1)
+    global _COMIC
+    _COMIC = None
+    npan = sum(len(p["panels"]) for p in meta["pages"])
+    rd = 'right-to-left' if meta.get('reading') == 'rtl' else 'left-to-right'
+    if comic_mode() == "claude":
+        print(f"\n[+] {len(meta['pages'])} page(s) imported ({rd}). Claude will mark the panels itself (ruler grid on every page).")
+    else:
+        print(f"\n[+] {len(meta['pages'])} page(s), {npan} panel(s) detected ({rd} reading order)")
+    odd = [p["page"] for p in meta["pages"] if len(p["panels"]) == 1 or len(p["panels"]) > 9] if comic_mode() == "auto" else []
+    if odd:
+        print(f"[i] Pages with 1 panel (splash?) or 10+ panels (check the numbering): {', '.join(map(str, odd[:30]))}")
+    print("\nBuilding the numbered review pages + PDF(s) for Claude ...")
+    pdfs = comic_build_review(meta)
+    print("\n[+] Give these to Claude (one PDF per message), together with PASTE_THIS_TO_CLAUDE.txt:")
+    for p in pdfs:
+        print(f"      {p}   ({os.path.getsize(p) / 1e6:.1f} MB)")
+    if comic_mode() == "claude":
+        print("\nClaude points at panels with boxes: {\"page\": 7, \"focus\": [{\"box\": [0.05, 0.40, 0.52, 0.71]}]}  (fractions of the page).")
+    else:
+        print("\nPanel numbers shown in the PDF are what segments.json refers to: {\"page\": 7, \"focus\": [2]}.")
+        print("If a page was split wrongly, edit pages/panels.json and run this step again (no force).")
+    reveal(REVIEW_DIR)
+
+
+# --------------------------------------------------------------------
+# 5. segments -> camera targets
+# --------------------------------------------------------------------
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _union(boxes):
+    return [min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes)]
+
+
+def comic_spec_to_target(spec, default_page, by):
+    """One focus entry -> {"page", "box"} (px).  Raises ValueError with a readable message."""
+    page = default_page
+    panel = None
+    box = None
+    if isinstance(spec, dict):
+        page = spec.get("page", default_page)
+        panel = spec.get("panel", spec.get("panels"))
+        box = spec.get("box")
+        if panel is None and box is None:
+            panel = "page"
+    elif isinstance(spec, (list, tuple)) and len(spec) == 4 and all(_num(v) for v in spec):
+        box = spec
+    else:
+        panel = spec
+    if not _num(page) or int(page) not in by:
+        raise ValueError(f"page {page!r} does not exist (comic has pages 1-{max(by) if by else 0})")
+    pg = by[int(page)]
+    W, H = pg["w"], pg["h"]
+    if box is not None:
+        if len(box) != 4 or not all(_num(v) for v in box):
+            raise ValueError(f"bad box {box!r}")
+        b = list(box)
+        if max(b) <= 1.5:
+            b = [b[0] * W, b[1] * H, b[2] * W, b[3] * H]
+        b = [max(0, min(W, b[0])), max(0, min(H, b[1])), max(0, min(W, b[2])), max(0, min(H, b[3]))]
+        if b[2] - b[0] < 8 or b[3] - b[1] < 8:
+            raise ValueError(f"box {box!r} is empty")
+        if ccfg().get("snap", True):
+            best, bi = None, 0.0
+            for a in pg.get("auto") or pg["panels"]:
+                ix = max(0.0, min(b[2], a[2]) - max(b[0], a[0])) * max(0.0, min(b[3], a[3]) - max(b[1], a[1]))
+                un = (b[2] - b[0]) * (b[3] - b[1]) + (a[2] - a[0]) * (a[3] - a[1]) - ix
+                if un > 0 and ix / un > bi:
+                    best, bi = a, ix / un
+            if best is not None and bi >= 0.6:
+                b = [float(v) for v in best]
+        return {"page": int(page), "box": b}
+    if isinstance(panel, str) and panel.strip().lower() in ("page", "full", "all", "whole"):
+        return {"page": int(page), "box": [0, 0, W, H]}
+    idx = []
+    if _num(panel):
+        idx = [int(panel)]
+    elif isinstance(panel, str):
+        for part in re.split(r"[,\s]+", panel.strip()):
+            if not part:
+                continue
+            m = re.match(r"^(\d+)\s*[-:]\s*(\d+)$", part)
+            if m:
+                idx += list(range(int(m.group(1)), int(m.group(2)) + 1))
+            elif part.isdigit():
+                idx.append(int(part))
+            else:
+                raise ValueError(f"cannot read panel {part!r}")
+    elif isinstance(panel, list):
+        idx = [int(v) for v in panel if _num(v)]
+    if not idx:
+        raise ValueError(f"no panel given in {spec!r}")
+    n = len(pg["panels"])
+    if n == 0:
+        raise ValueError(f"page {page}: panel numbers are not used in 'claude' mode - give a box, e.g. {{\"box\":[0.05,0.4,0.52,0.71]}}")
+    for i in idx:
+        if i < 1 or i > n:
+            raise ValueError(f"page {page} has {n} panel(s), but panel {i} was asked for")
+    return {"page": int(page), "box": _union([pg["panels"][i - 1] for i in idx])}
+
+
+def comic_media(seg):
+    """Where a comic segment's picture comes from -> a seg_media()-style dict."""
+    data = comic_load_panels()
+    by = data["_by"]
+    if not by:
+        return {"kind": "slate", "why": "comic not imported yet (run 'Import comic' first)"}
+    focus = seg.get("focus", seg.get("panels", seg.get("panel")))
+    if focus is None:
+        focus = ["page"]
+    if not isinstance(focus, list):
+        focus = [focus]
+    default_page = seg.get("page")
+    if default_page is None and focus and isinstance(focus[0], dict):
+        default_page = focus[0].get("page")
+    targets = []
+    try:
+        for spec in focus:
+            t = comic_spec_to_target(spec, default_page, by)
+            pg = by[t["page"]]
+            t.update(file=pg["file"], w=pg["w"], h=pg["h"])
+            targets.append(t)
+    except (ValueError, TypeError) as e:
+        return {"kind": "slate", "why": f"comic: {e}"}
+    return {"kind": "comic", "file": targets[0]["file"], "start": 0.0, "avail": 0.0, "targets": targets}
+
+
+def comic_prepare(segments):
+    """Fills in each segment's default entrance (page turn = swipe, next panel = swipe toward it)."""
+    cfg = ccfg()
+    rtl = str(comic_load_panels().get("reading", PROJECT.get("reading", "ltr"))).lower() == "rtl"
+    prev = None
+    for seg in segments:
+        if not isinstance(seg, dict) or not (seg.get("page") is not None or seg.get("focus") is not None
+                                             or seg.get("panel") is not None or seg.get("panels") is not None):
+            continue
+        m = comic_media(seg)
+        if m["kind"] != "comic":
+            prev = None
+            continue
+        want = str(seg.get("enter") or "auto").lower()
+        first, last = m["targets"][0], m["targets"][-1]
+        if want == "auto":
+            if prev is None:
+                want = "fade"
+            elif prev["page"] != first["page"]:
+                tp = str(cfg.get("page_turn", "slide")).lower()
+                want = ("slide_right" if rtl else "slide_left") if tp == "slide" else tp
+            elif str(cfg.get("same_panel_move", "slide")).lower() == "slide":
+                pb, fb = prev["box"], first["box"]
+                dx = ((fb[0] + fb[2]) - (pb[0] + pb[2])) / 2 / first["w"]
+                dy = ((fb[1] + fb[3]) - (pb[1] + pb[3])) / 2 / first["h"]
+                if max(abs(dx), abs(dy)) < 0.04:
+                    want = "cut"
+                elif abs(dx) >= abs(dy):
+                    want = "slide_left" if dx > 0 else "slide_right"
+                else:
+                    want = "slide_up" if dy > 0 else "slide_down"
+            else:
+                want = "cut"
+        seg["_enter"] = want
+        prev = last
+
+
+# --------------------------------------------------------------------
+# 6. the virtual camera
+# --------------------------------------------------------------------
+def _ease(t):
+    t = max(0.0, min(1.0, t))
+    return t * t * (3 - 2 * t)
+
+
+def _ease_out(t):
+    t = max(0.0, min(1.0, t))
+    return 1 - (1 - t) ** 3
+
+
+def _cwin(box, A, margin):
+    """Smallest camera window (cx, cy, height) of aspect A that shows `box` plus a margin."""
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    ww, wh = bw * (1 + 2 * margin), bh * (1 + 2 * margin)
+    if ww / wh > A:
+        wh = ww / A
+    return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, wh)
+
+
+def _lerp_win(a, b, f):
+    return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f,
+            math.exp(math.log(a[2]) + (math.log(b[2]) - math.log(a[2])) * f))
+
+
+ANCHORS = {"center": (0, 0), "left": (-1, 0), "right": (1, 0), "top": (0, -1), "bottom": (0, 1),
+           "top-left": (-1, -1), "top-right": (1, -1), "bottom-left": (-1, 1), "bottom-right": (1, 1)}
+
+
+def comic_motion_for(seg):
+    mo = str(seg.get("motion") or "auto").lower().replace(" ", "_")
+    if mo == "auto":
+        mo = ["push_in", "drift", "push_in", "pull_out"][int(h8(seg.get("id", "x")), 16) % 4]
+    return mo
+
+
+def comic_single_path(seg, box, A, margin):
+    """Start / end camera window for ONE panel."""
+    cfg = ccfg()
+    zoom = max(1.0, float(seg.get("zoom") or cfg.get("zoom", 1.12)))
+    w0 = _cwin(box, A, margin)
+    cx, cy, wh = w0
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    ax, ay = ANCHORS.get(str(seg.get("anchor") or "center").lower(), (0, 0))
+    mo = comic_motion_for(seg)
+    sign = 1 if int(h8(seg.get("id", "x")), 16) % 2 == 0 else -1
+    if mo == "still":
+        return w0, w0, mo
+    if mo in ("push_in", "shake"):
+        return w0, (cx + ax * 0.16 * bw, cy + ay * 0.16 * bh, wh / zoom), mo
+    if mo == "pull_out":
+        return (cx + ax * 0.16 * bw, cy + ay * 0.16 * bh, wh / zoom), w0, mo
+    if mo == "drift":
+        return ((cx - sign * 0.025 * bw, cy - 0.02 * bh, wh / 1.05),
+                (cx + sign * 0.025 * bw, cy + 0.02 * bh, wh / 1.05), mo)
+    if mo.startswith("pan_"):
+        zp = max(zoom, 1.3)
+        wh2 = wh / zp
+        ww2 = wh2 * A
+        dirn = mo[4:]
+        if dirn in ("left", "right"):
+            d = max((bw - ww2) / 2, 0.08 * bw)
+            s, e = (cx + d, cx - d) if dirn == "left" else (cx - d, cx + d)
+            return (s, cy, wh2), (e, cy, wh2), mo
+        if dirn in ("up", "down"):
+            d = max((bh - wh2) / 2, 0.08 * bh)
+            s, e = (cy + d, cy - d) if dirn == "up" else (cy - d, cy + d)
+            return (cx, s, wh2), (cx, e, wh2), mo
+    return w0, (cx, cy, wh / zoom), "push_in"
+
+
+def comic_bg(page, clip, W, H):
+    """Dark blurred copy of the panel that fills the frame behind it."""
+    from PIL import Image, ImageFilter, ImageEnhance
+    sw, sh = max(16, W // 8), max(16, H // 8)
+    cr = page.crop((int(clip[0]), int(clip[1]), max(int(clip[0]) + 2, int(clip[2])),
+                    max(int(clip[1]) + 2, int(clip[3]))))
+    s = max(sw / cr.width, sh / cr.height)
+    t = cr.resize((max(1, round(cr.width * s)), max(1, round(cr.height * s))), Image.BILINEAR)
+    l, tp = (t.width - sw) // 2, (t.height - sh) // 2
+    t = t.crop((l, tp, l + sw, tp + sh)).filter(ImageFilter.GaussianBlur(max(2, sw // 36)))
+    t = ImageEnhance.Brightness(t).enhance(0.42)
+    return t.resize((W, H), Image.BICUBIC)
+
+
+def comic_compose(page, clips, bg, win, A, W, H, off=(0, 0), pop=1.0):
+    """One frame: the parts of `page` inside camera `win` that belong to the chosen panels
+    (`clips` = list of boxes), pasted over the blurred backdrop. Other panels never show."""
+    from PIL import Image
+    cx, cy, wh = win
+    wh = wh / pop
+    ww = wh * A
+    wx0, wy0 = cx - ww / 2, cy - wh / 2
+    s = W / ww
+    fr = bg.copy()
+    for clip in clips:
+        vx0, vy0 = max(wx0, clip[0]), max(wy0, clip[1])
+        vx1, vy1 = min(wx0 + ww, clip[2]), min(wy0 + wh, clip[3])
+        if vx1 - vx0 < 1 or vy1 - vy0 < 1:
+            continue
+        dx0, dy0 = round((vx0 - wx0) * s), round((vy0 - wy0) * s)
+        dx1, dy1 = round((vx1 - wx0) * s), round((vy1 - wy0) * s)
+        dw, dh = dx1 - dx0, dy1 - dy0
+        if dw < 2 or dh < 2:
+            continue
+        sb = (wx0 + dx0 / s, wy0 + dy0 / s, wx0 + dx1 / s, wy0 + dy1 / s)
+        sb = (max(0.0, sb[0]), max(0.0, sb[1]), min(float(page.width), sb[2]), min(float(page.height), sb[3]))
+        if sb[2] - sb[0] < 1 or sb[3] - sb[1] < 1:
+            continue
+        fr.paste(page.resize((dw, dh), Image.BICUBIC, box=sb), (dx0 + off[0], dy0 + off[1]))
+    return fr
+
+
+def comic_key(seg, m):
+    parts = [f"{file_sig(t['file'])}|{[round(v) for v in t['box']]}" for t in m["targets"]]
+    c = ccfg()
+    return json.dumps([parts, comic_motion_for(seg), seg.get("zoom"), seg.get("anchor"), seg.get("_enter"),
+                       seg.get("shake"), c.get("zoom"), c.get("margin"), c.get("enter_sec"), COMIC_VER], default=str)
+
+
+def comic_note(seg, m):
+    t = m["targets"]
+    where = f"p{t[0]['page']}" + (f"+{len(t) - 1} more stop(s)" if len(t) > 1 else "")
+    return f"comic {where}, {'glide' if len(t) > 1 else comic_motion_for(seg)}, enter={seg.get('_enter', 'cut')}"
+
+
+def render_comic_clip(m, seg, frames, W, H, F, out):
+    """Camera moves over the comic page(s); exactly `frames` frames, piped straight into ffmpeg."""
+    from PIL import Image
+    cfg = ccfg()
+    A = W / H
+    margin = float(cfg.get("margin", 0.04))
+    targets = m["targets"]
+    pages = {}
+    for t in targets:
+        if t["file"] not in pages:
+            im = Image.open(t["file"])
+            im.load()
+            pages[t["file"]] = im.convert("RGB")
+    # only the stops themselves are ever drawn (other panels on the page stay hidden)
+    clips = {}
+    for t in targets:
+        clips.setdefault(t["file"], []).append(t["box"])
+    bgs = {k: comic_bg(pages[k], _union(v), W, H) for k, v in clips.items()}
+
+    n = len(targets)
+    if n == 1:
+        w_a, w_b, motion = comic_single_path(seg, targets[0]["box"], A, margin)
+        wins = None
+    else:
+        wins = [_cwin(t["box"], A, margin) for t in targets]
+        motion = "glide"
+
+    enter = str(seg.get("_enter") or seg.get("enter") or "cut").lower()
+    n_enter = 0 if enter == "cut" else max(2, min(int(round(float(cfg.get("enter_sec", 0.35)) * F)), int(frames * 0.45)))
+    shake = motion == "shake" or bool(seg.get("shake"))
+
+    log = out + ".log"
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
+           "-r", str(F), "-i", "-", "-frames:v", str(frames)] + \
+          [("veryfast" if x == "fast" else x) for x in X264] + [out]
+    with open(log, "w") as lf:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=lf)
+        try:
+            for i in range(frames):
+                u = (i + 0.5) / frames
+                if wins is None:
+                    win = _lerp_win(w_a, w_b, _ease(u) if motion != "still" else 0.0)
+                    tgt = targets[0]
+                else:
+                    p = min(max(u * n - 0.5, 0.0), n - 1.0)
+                    k = min(int(p), n - 2)
+                    f = p - k
+                    hold = 0.18
+                    f = _ease((f - hold) / (1 - 2 * hold))
+                    if targets[k]["file"] != targets[k + 1]["file"]:
+                        f = 0.0 if (p - k) < 0.5 else 1.0
+                    win = _lerp_win(wins[k], wins[k + 1], f)
+                    tgt = targets[k + 1] if f >= 0.5 else targets[k]
+                if shake:
+                    t = i / F
+                    amp = 0.014 * win[2] * math.exp(-t / 0.35)
+                    win = (win[0] + amp * math.sin(2 * math.pi * 17 * t),
+                           win[1] + amp * math.cos(2 * math.pi * 13 * t), win[2])
+                off, pop, alpha = (0, 0), 1.0, 1.0
+                if n_enter and i < n_enter:
+                    e = _ease_out((i + 1) / n_enter)
+                    if enter == "slide_left":
+                        off = (round((1 - e) * W), 0)
+                    elif enter == "slide_right":
+                        off = (-round((1 - e) * W), 0)
+                    elif enter == "slide_up":
+                        off = (0, round((1 - e) * H))
+                    elif enter == "slide_down":
+                        off = (0, -round((1 - e) * H))
+                    elif enter in ("fade", "pop"):
+                        alpha = e
+                        if enter == "pop":
+                            pop = 0.9 + 0.1 * e
+                fr = comic_compose(pages[tgt["file"]], clips[tgt["file"]], bgs[tgt["file"]], win, A, W, H, off, pop)
+                if alpha < 1.0:
+                    fr = Image.blend(bgs[tgt["file"]], fr, alpha)
+                proc.stdin.write(fr.tobytes())
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        rc = proc.wait()
+    if rc != 0 or not os.path.exists(out):
+        err = ""
+        try:
+            err = open(log, "r").read()
+        except OSError:
+            pass
+        raise RuntimeError(f"ffmpeg failed while rendering the comic clip:\n{tail(err)}")
+    try:
+        os.remove(log)
+    except OSError:
+        pass
+
+
+def comic_status():
+    meta = comic_load_panels()
+    pages = meta.get("pages", [])
+    pdfs = glob.glob(os.path.join(REVIEW_DIR, "*.pdf"))
+    if not pages:
+        return "Comic   : not imported yet (run 'Import comic')"
+    return (f"Comic   : {len(pages)} page(s), {sum(len(p['panels']) for p in pages)} panel(s), "
+            f"{len(pdfs)} PDF part(s) for Claude in {REVIEW_DIR}/")
+
+
 STEPS = {"init": step_init, "module": step_module, "subs": step_subs, "index": step_index,
-         "sheets": step_sheets, "collect": step_collect, "tts": step_tts, "review": step_review,
-         "premiere": step_premiere, "video": step_video, "srt": step_srt, "tiktok": step_tiktok,
+         "sheets": step_sheets, "comic": step_comic, "collect": step_collect, "tts": step_tts, "review": step_review,
+         "premiere": step_premiere, "videopad": step_videopad, "video": step_video, "srt": step_srt, "tiktok": step_tiktok,
          "check": step_check, "demo": step_demo,
          "missing": step_missing, "collect_one": step_collect_one}
 NO_STATE = ("init", "module", "demo", "missing", "collect_one")
@@ -2704,13 +3915,14 @@ def main():
     ap.add_argument("--only", help="tts: comma-separated segment ids to (re)voice")
     ap.add_argument("--preview", action="store_true", help="tts: voice a few segments into audio_preview/")
     ap.add_argument("--import", dest="do_import", action="store_true", help="review: import edits from the CSV")
+    ap.add_argument("--simple", action="store_true", help="videopad: picture + voice only (one muxed file per segment)")
     ap.add_argument("--retry", action="store_true", help="collect: ask again for skipped shots")
     ap.add_argument("--engine", choices=("edge", "elevenlabs", "minimax"), help="tts: skip the engine prompt")
     ap.add_argument("--yes", action="store_true", help="auto-confirm destructive / re-voice prompts")
     ap.add_argument("--id", help="collect_one: segment id")
     ap.add_argument("--url", help="collect_one: source URL")
     ap.add_argument("--range", help="collect_one: optional 'start-end' time range")
-    ap.add_argument("--file", help="collect_one: local media file to copy in")
+    ap.add_argument("--file", help="collect_one: local media file to copy in  |  comic: the .cbz/.cbr/.pdf to import")
     ap.add_argument("--skip", action="store_true", help="collect_one: mark the shot as skipped")
     args = ap.parse_args()
     try:

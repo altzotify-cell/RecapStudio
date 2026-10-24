@@ -32,6 +32,15 @@ PREMIERE OUTPUT (premiere_sequence.xml)
   narration text), recap_onscreen.srt (backup for number/caption text), chapters.txt, shot_manifest.csv.
   Import recap_subtitles.srt AFTER the XML sequence is open (Import, drag onto the timeline).
 
+VIDEOPAD OUTPUT (videopad_project.vpj)   menu 19 / 4d_build_videopad_project.bat
+  Same timeline as the Premiere XML, written in VideoPad's own project format. Open it with File > Open Project.
+  VideoPad warns "The provided file may be damaged" - that is expected: click Try Load (it can appear twice).
+  Tracks: V1 footage, V2 number + caption graphics, A1 voice-over, A2 original sound, A3 music bed.
+  NOT carried over: chapter / missing-shot markers (see chapters.txt and shot_manifest.csv).
+  If VideoPad will not open the full project: menu 20 / 4e_build_videopad_project_simple.bat writes a V1 + A1
+  version (picture and voice muxed into one file per segment in clips_av\) - no graphics, original sound or music.
+  The project stores file paths, not media: keep clips\, clips_av\, gfx\ and audio_trim\ where they are.
+
 FOOTAGE FITTING
   Every clip is cut to EXACTLY its voice-over length (longer footage: end cut off; shorter: last frame held).
   Different shape (4:3 old games, vertical) -> config.json "fill": "pad" (black bars) or "blur" (blurred fill).

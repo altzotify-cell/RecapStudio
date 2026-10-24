@@ -8,8 +8,10 @@ if not defined PY where python >nul 2>nul && set "PY=python"
 set "MODULE=movie_recap"
 if defined PY for /f "delims=" %%m in ('%PY% recap.py module') do set "MODULE=%%m"
 set "RECAP=0"
+set "COMIC=0"
 if "%MODULE%"=="movie_recap" set "RECAP=1"
 if "%MODULE%"=="show_recap" set "RECAP=1"
+if "%MODULE%"=="comic_recap" set "COMIC=1"
 :menu
 cls
 echo ==============================================
@@ -17,9 +19,10 @@ echo   RECAP STUDIO      [%MODULE%]
 echo ==============================================
 echo.
 if "%RECAP%"=="1" echo   1  Extract subtitles from video
-if "%RECAP%"=="0" echo   13 Collect footage            (guided: paste links / drag files)
-if "%RECAP%"=="0" echo   12 Index footage              (contact sheets for every clip)
-echo   2  Make contact sheets        (segments marked need_visual)
+if "%COMIC%"=="1" echo   21 Import comic / manga       (.cbz .cbr .pdf - makes the numbered PDF for Claude)
+if "%RECAP%%COMIC%"=="00" echo   13 Collect footage            (guided: paste links / drag files)
+if "%RECAP%%COMIC%"=="00" echo   12 Index footage              (contact sheets for every clip)
+if "%COMIC%"=="0" echo   2  Make contact sheets        (segments marked need_visual)
 echo.
 echo   15 Export narration sheet     (review / edit text + tags in Excel)
 echo   16 Import narration edits
@@ -27,9 +30,13 @@ echo   14 Preview voice              (first 3 segments, before spending credits)
 echo   3  Generate voice-over        (only new / edited segments are re-voiced)
 echo.
 echo   4  Build Premiere XML         (also writes .srt, chapters, shot list)
-if "%RECAP%"=="1" echo   5  Build FULL VIDEO           (one finished .mp4)
+echo   19 Build VideoPad project     (.vpj - same timeline for VideoPad)
+echo   20 VideoPad project, simple   (fallback: picture + voice only)
+if "%RECAP%%COMIC%"=="10" echo   5  Build FULL VIDEO           (one finished .mp4)
+if "%COMIC%"=="1" echo   5  Build FULL VIDEO           (camera moves over the panels -> one .mp4)
 echo   6  Build subtitles only       (.srt for Premiere)
-if "%RECAP%"=="1" echo   7  Build TikTok videos        (also writes .srt per part)
+if "%RECAP%%COMIC%"=="10" echo   7  Build TikTok videos        (also writes .srt per part)
+if "%COMIC%"=="1" echo   7  Build TikTok videos        (9:16, also writes .srt per part)
 echo.
 echo   8  Change voice / engine, then generate
 echo   9  Redo ALL audio from scratch
@@ -59,5 +66,8 @@ if "%C%"=="15" call "%~dp0_run.bat" review
 if "%C%"=="16" call "%~dp0_run.bat" review --import
 if "%C%"=="17" call "%~dp0_run.bat" init
 if "%C%"=="18" call "%~dp0_run.bat" demo
+if "%C%"=="19" call "%~dp0_run.bat" videopad
+if "%C%"=="20" call "%~dp0_run.bat" videopad --simple
+if "%C%"=="21" call "%~dp0_run.bat" comic
 if "%C%"=="0" exit /b
 goto menu

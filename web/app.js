@@ -167,6 +167,7 @@ async function loadDetail() {
 function renderHeader() {
   const d = state.detail;
   $("projTitle").textContent = d.name;
+  if ($("tabFootage")) $("tabFootage").textContent = isComic() ? "Comic" : "Footage";
   const p = d.project;
   const modLabel = (state.bootstrap.modules.find(m => m[0] === p.module) || [p.module, p.module])[1];
   $("projMeta").innerHTML =
@@ -190,7 +191,7 @@ function renderTab() {
   if (state.tab === "dashboard") renderDashboard(c);
   else if (state.tab === "pipeline") renderPipeline(c);
   else if (state.tab === "script") renderScript(c);
-  else if (state.tab === "footage") renderFootage(c);
+  else if (state.tab === "footage") (isComic() ? renderComic(c) : renderFootage(c));
   else if (state.tab === "voice") renderVoice(c);
   else if (state.tab === "outputs") renderOutputs(c);
   else if (state.tab === "settings") renderSettings(c);
@@ -354,7 +355,7 @@ async function pollRunning() {
 async function refreshAfterJob() {
   await refreshProjects();
   await loadDetail();
-  if (state.tab === "footage") await loadMissing();
+  if (state.tab === "footage" && !isComic()) await loadMissing();
   renderTab();
 }
 
@@ -366,7 +367,7 @@ function renderDashboard(c) {
   const modLabel = (state.bootstrap.modules.find(m => m[0] === p.module) || [p.module, p.module])[1];
   const out = d.outputs;
   const outBadges = [
-    ["Final video", out.video], ["Premiere XML", out.premiere], ["Subtitles", out.srt],
+    ["Final video", out.video], ["Premiere XML", out.premiere], ["VideoPad project", out.videopad], ["Subtitles", out.srt],
     ["Chapters", out.chapters], ["Shot list", out.shot_manifest], ["Credits", out.credits],
   ].map(([n, ok]) => '<span class="badge ' + (ok ? "good" : "") + '">' + n + (ok ? " ✓" : "") + "</span>").join("");
 
@@ -403,23 +404,29 @@ function renderDashboard(c) {
 /* ------------------------------------------------------------------ */
 function isRecap() {
   const m = state.detail.project.module;
-  return m === "movie_recap" || m === "show_recap";
+  return m === "movie_recap" || m === "show_recap" || m === "comic_recap";
+}
+function isComic() {
+  return state.detail && state.detail.project.module === "comic_recap";
 }
 
 function pipelineSteps() {
   const engine = (state.detail.config.tts && state.detail.config.tts.engine) || "edge";
   const steps = [];
-  if (isRecap()) steps.push({ step: "subs", name: "Extract subtitles", desc: state.detail.project.module === "show_recap"
+  if (isComic()) steps.push({ step: "comic", name: "Import comic / manga", desc: "Unpack the .cbz / .cbr / .pdf into pages, find the panels, and write the numbered PDF(s) for Claude into comic_review/. Tick Force to re-detect every panel." });
+  else if (isRecap()) steps.push({ step: "subs", name: "Extract subtitles", desc: state.detail.project.module === "show_recap"
     ? "Pull the subtitles out of EVERY episode in footage/ in one run. Also makes subs/ALL_EPISODES_for_claude.txt - the one file to give Claude."
     : "Pull embedded subtitle tracks from the film into subs/." });
   else steps.push({ step: "index", name: "Index footage", desc: "Contact sheets for every clip in footage/." });
-  steps.push({ step: "sheets", name: "Contact sheets", desc: "Sheets for segments marked need_visual." });
+  if (!isComic()) steps.push({ step: "sheets", name: "Contact sheets", desc: "Sheets for segments marked need_visual." });
   steps.push({ step: "review", name: "Export review sheet", desc: "Write review_sheet.csv (optional Excel workflow)." });
   steps.push({ step: "tts", name: "Voice-over", desc: "Generate narration audio (only new / edited segments).", engine });
   steps.push({ step: "premiere", name: "Build Premiere XML", desc: "Cut clips + multi-track XML (+ srt, chapters, shot list)." });
+  steps.push({ step: "videopad", name: "Build VideoPad project", desc: "Same timeline as a VideoPad .vpj (V1/V2 + A1-A3). Click Try Load when VideoPad warns." });
+  steps.push({ step: "videopad_simple", name: "Build VideoPad project (simple)", desc: "Fallback: picture + voice only, one file per segment. Use if the full project will not open." });
   steps.push({ step: "srt", name: "Build subtitles", desc: "Write recap_subtitles.srt for Premiere." });
   if (isRecap()) {
-    steps.push({ step: "video", name: "Build full video", desc: "One finished recap_final.mp4." });
+    steps.push({ step: "video", name: "Build full video", desc: isComic() ? "Camera moves (zoom / pan / swipe) rendered over the panels into one recap_final.mp4." : "One finished recap_final.mp4." });
     steps.push({ step: "tiktok", name: "Build TikTok", desc: "Vertical 9:16 parts into tiktok_out/." });
   }
   steps.push({ step: "check", name: "Status check", desc: "Report + rewrite STATE.md." });
@@ -432,6 +439,7 @@ function runStep(step) {
   const flags = {};
   if ($("forceChk") && $("forceChk").checked) flags.force = true;
   if (step === "tts") flags.engine = s.engine;
+  if (step === "videopad_simple") { flags.simple = true; step = "videopad"; }
   startJob(step, flags, s.name);
 }
 
@@ -441,7 +449,8 @@ function runPreview() {
 }
 
 function runAll() {
-  const seq = isRecap() ? ["subs", "sheets", "tts", "premiere", "srt"]
+  const seq = isComic() ? ["comic", "tts", "premiere", "srt"]
+            : isRecap() ? ["subs", "sheets", "tts", "premiere", "srt"]
                         : ["index", "sheets", "tts", "premiere", "srt"];
   runSequence(seq);
 }
@@ -492,8 +501,8 @@ function renderPipeline(c) {
                       '<button class="btn small" onclick="runPreview()">Preview</button>';
           } else if (s.step === "video") {
             actions = '<button class="btn primary small" onclick="runStep(\'video\')">Build</button>';
-          } else if (s.step === "premiere") {
-            actions = '<button class="btn primary small" onclick="runStep(\'premiere\')">Build</button>';
+          } else if (s.step === "premiere" || s.step === "videopad") {
+            actions = '<button class="btn primary small" onclick="runStep(\'' + s.step + '\')">Build</button>';
           } else {
             actions = '<button class="btn small" onclick="runStep(\'' + s.step + '\')">Run</button>';
           }
@@ -802,6 +811,48 @@ function folderSection(title, folder, files, allowUpload) {
     '<div class="media-grid">' + (items || '<div class="muted">empty</div>') + '</div></div>';
 }
 
+let comicShown = 24;
+async function renderComic(c) {
+  const d = state.detail;
+  let meta = null;
+  try {
+    const r = await fetch(fileUrl("pages/panels.json") + "?t=" + Date.now());
+    if (r.ok) meta = await r.json();
+  } catch (e) { meta = null; }
+  const pages = (meta && meta.pages) || [];
+  const npan = pages.reduce((a, p) => a + (p.panels || []).length, 0);
+  const comicFiles = (d.root_media || []).filter((f) => /\.(cbz|cbr|cb7|zip|rar|7z|pdf|epub)$/i.test(f.name));
+  const review = (d.files.comic_review || []);
+  const pdfs = review.filter((f) => /\.pdf$/i.test(f.name));
+  const imgs = review.filter((f) => f.kind === "image");
+  const shown = imgs.slice(0, comicShown);
+  c.innerHTML =
+    '<div class="section"><h3>1 · The comic file</h3><div class="card">' +
+      '<p class="muted" style="margin-top:0">Upload a <b>.cbz</b>, <b>.cbr</b> or <b>.pdf</b> (or a .zip of page images). ' +
+      'You can also just drop the file into the project folder. Then run <b>Import comic / manga</b>.</p>' +
+      '<label class="btn small" style="margin-bottom:8px;display:inline-block">⬆ Upload comic' +
+        '<input type="file" accept=".cbz,.cbr,.cb7,.zip,.rar,.7z,.pdf,.epub" style="display:none" onchange="uploadFileInput(this,\'root\')"></label> ' +
+      '<button class="btn primary small" onclick="runStep(\'comic\')">▶ Import comic / manga</button> ' +
+      '<button class="btn ghost small" onclick="apiPost(\'/api/projects/' + enc(state.current) + '/open\')">📂 Open folder</button>' +
+      '<div class="media-grid" style="margin-top:8px">' +
+        (comicFiles.map((f) => mediaItem(f.name, f.kind, fileUrl(f.name))).join("") || '<div class="muted">no comic file in the project folder yet</div>') +
+      '</div></div></div>' +
+    '<div class="section"><h3>2 · Imported: ' + pages.length + ' page(s), ' + npan + ' panel(s) ' +
+      (meta ? '<span class="badge">' + (meta.reading === "rtl" ? "right-to-left" : "left-to-right") + '</span>' : "") + '</h3>' +
+      (pdfs.length
+        ? '<div class="card"><p class="muted" style="margin-top:0">Give <b>one PDF per message</b> to Claude together with the prompt (Script tab → prompt). ' +
+          'Panel numbers in these PDFs are what <code>segments.json</code> points at.</p>' +
+          pdfs.map((f) => '<a class="btn small" style="margin:0 6px 6px 0" href="' + fileUrl("comic_review/" + f.name) + '" download>⬇ ' + esc(f.name) + ' (' + (f.size / 1e6).toFixed(1) + ' MB)</a>').join("") + '</div>'
+        : '<div class="card muted">Nothing imported yet.</div>') +
+      (shown.length
+        ? '<div class="media-grid" style="margin-top:10px">' + shown.map((f) => mediaItem(f.name, f.kind, fileUrl("comic_review/" + f.name))).join("") + '</div>' +
+          (imgs.length > shown.length ? '<p><button class="btn small" onclick="comicShown+=48;renderTab()">Show more (' + (imgs.length - shown.length) + ' left)</button></p>' : "") +
+          '<p class="muted">Wrong split on a page? Edit <code>pages/panels.json</code> (pixel boxes, reading order) and run the import again <i>without</i> Force.</p>'
+        : "") +
+    '</div>' +
+    folderSection("Music", "music", d.files.music, true);
+}
+
 async function renderFootage(c) {
   await loadMissing();
   const d = state.detail;
@@ -964,6 +1015,7 @@ function renderOutputs(c) {
   const clips = (d.files.clips || []).filter(f => f.kind === "video");
   const downloads = [
     ["Premiere XML", "premiere_sequence.xml", out.premiere],
+    ["VideoPad project", "videopad_project.vpj", out.videopad],
     ["Subtitles (.srt)", "recap_subtitles.srt", out.srt],
     ["On-screen text (.srt)", "recap_onscreen.srt", out.onscreen_srt],
     ["Chapters", "chapters.txt", out.chapters],
@@ -1016,6 +1068,8 @@ function renderSettings(c) {
         '<h3 style="margin-top:0">Project</h3>' +
         '<label>Module</label><select id="sModule">' + moduleOpts(p.module) + '</select>' +
         '<label>Topic / title</label><input id="sTopic" value="' + esc(p.topic || "") + '">' +
+        (isComic() ? '<label>Reading direction</label><select id="sReading">' +
+          [['ltr', 'Left to right (western, manhwa)'], ['rtl', 'Right to left (manga)']].map(r => '<option value="' + r[0] + '"' + ((p.reading || 'ltr') === r[0] ? " selected" : "") + '>' + r[1] + '</option>').join("") + '</select>' : "") +
         (recap ? '<label>Style</label><select id="sStyle">' +
           ['retell', 'commentary', 'mixed'].map(s => '<option value="' + s + '"' + (p.style === s ? " selected" : "") + '>' + s + '</option>').join("") +
           '</select>' : "") +
@@ -1056,6 +1110,7 @@ function renderSettings(c) {
           '<div><input id="cSubChars" value="' + esc(sub.max_chars_per_line != null ? sub.max_chars_per_line : 42) + '" placeholder="chars/line"></div>' +
           '<div><input id="cSubLines" value="' + esc(sub.max_lines != null ? sub.max_lines : 2) + '" placeholder="lines"></div>' +
         '</div>' +
+        (isComic() ? comicConfigCard(cfg.comic || {}) : "") +
         '<button class="btn primary" style="margin-top:14px" onclick="saveConfigSettings()">Save config</button>' +
       '</div>' +
     '</div>' +
@@ -1085,6 +1140,7 @@ async function saveProjectSettings() {
     captions: document.getElementById("sCaptions").checked,
   };
   if (recap) project.style = document.getElementById("sStyle").value;
+  if (isComic() && document.getElementById("sReading")) project.reading = document.getElementById("sReading").value;
   const res = await apiPost("/api/projects/" + enc(state.current) + "/settings", { project });
   if (res.error) { toast(res.error); return; }
   toast("Project saved ✓");
@@ -1092,6 +1148,20 @@ async function saveProjectSettings() {
   await loadDetail();
   renderHeader();
   renderTab();
+}
+
+function comicConfigCard(cm) {
+  const sel = (id, val, opts) => '<select id="' + id + '">' + opts.map(o => '<option value="' + o + '"' + (val === o ? " selected" : "") + '>' + o + '</option>').join("") + '</select>';
+  return '<label>Comic camera (push-in zoom × swipe seconds × pages per PDF)</label>' +
+    '<div class="form-row3">' +
+      '<div><input id="cmZoom" value="' + esc(cm.zoom != null ? cm.zoom : 1.12) + '"></div>' +
+      '<div><input id="cmEnter" value="' + esc(cm.enter_sec != null ? cm.enter_sec : 0.35) + '"></div>' +
+      '<div><input id="cmPdf" value="' + esc(cm.pdf_pages != null ? cm.pdf_pages : 30) + '"></div>' +
+    '</div>' +
+    '<div class="form-row">' +
+      '<div><label>New page entrance</label>' + sel("cmTurn", cm.page_turn || "slide", ["slide", "fade", "pop", "cut"]) + '</div>' +
+      '<div><label>Next panel, same page</label>' + sel("cmSame", cm.same_panel_move || "slide", ["slide", "cut"]) + '</div>' +
+    '</div>';
 }
 
 async function saveConfigSettings() {
@@ -1111,6 +1181,15 @@ async function saveConfigSettings() {
       max_lines: parseInt(document.getElementById("cSubLines").value) || 2,
     },
   };
+  if (isComic() && document.getElementById("cmZoom")) {
+    config.comic = {
+      zoom: parseFloat(document.getElementById("cmZoom").value) || 1.12,
+      enter_sec: parseFloat(document.getElementById("cmEnter").value) || 0.35,
+      page_turn: document.getElementById("cmTurn").value,
+      same_panel_move: document.getElementById("cmSame").value,
+      pdf_pages: parseInt(document.getElementById("cmPdf").value) || 30,
+    };
+  }
   const res = await apiPost("/api/projects/" + enc(state.current) + "/config", { config });
   if (res.error) { toast(res.error); return; }
   toast("Config saved ✓");

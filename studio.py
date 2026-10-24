@@ -40,10 +40,12 @@ MODULES = [
     ("nba_story", "NBA story"),
     ("real_story", "Real story"),
     ("ranking", "Ranking / top-N"),
+    ("comic_recap", "Comic / manga recap"),
 ]
-RECAP_MODULES = ("movie_recap", "show_recap")
+RECAP_MODULES = ("movie_recap", "show_recap", "comic_recap")
+COMIC_EXTS = (".cbz", ".cbr", ".cb7", ".zip", ".rar", ".7z", ".pdf", ".epub")
 DEFAULT_TARGETS = {"movie_recap": "10:00", "show_recap": "10:00", "nba_minidoc": "8:00",
-                   "nba_story": "3:00", "real_story": "6:00", "ranking": "6:00"}
+                   "nba_story": "3:00", "real_story": "6:00", "ranking": "6:00", "comic_recap": "8:00"}
 
 ENGINES = [
     ("edge", "Edge-TTS (free, unlimited)"),
@@ -66,7 +68,7 @@ MINIMAX_VOICES = [
 DEFAULT_PROJECT = {
     "module": "movie_recap", "topic": "", "style": "retell", "target_length": "",
     "platform": "youtube", "tts_mode": "plain", "voice_card": "",
-    "fact_check": "off", "music": False, "captions": True,
+    "fact_check": "off", "music": False, "captions": True, "reading": "ltr",
 }
 DEFAULT_CONFIG = {
     "fps": 24, "width": 1920, "height": 1080, "sample_rate": 48000,
@@ -80,7 +82,7 @@ DEFAULT_CONFIG = {
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
 }
 
-FOLDERS = ["footage", "images", "music", "sheets", "subs", "audio", "audio_preview",
+FOLDERS = ["footage", "images", "music", "sheets", "subs", "comic_review", "audio", "audio_preview",
            "clips", "gfx", "audio_trim"]
 
 JOBS = {}
@@ -221,6 +223,9 @@ def tools_status():
         "ytdlp": shutil.which("yt-dlp") is not None or has_module("yt_dlp"),
         "edge_tts": has_module("edge_tts"),
         "requests": has_module("requests"),
+        "pillow": has_module("PIL"),
+        "numpy": has_module("numpy"),
+        "pymupdf": has_module("fitz"),
         "keys": load_keys(),
     }
 
@@ -278,7 +283,7 @@ def engine_is_current(name):
     except Exception:
         return False
     return ("def step_missing" in txt and "def step_collect_one" in txt
-            and "def find_all_videos" in txt)
+            and "def find_all_videos" in txt and "def step_comic" in txt)
 
 
 def ensure_engine(name):
@@ -298,6 +303,8 @@ def preview_kind(fname):
         return "video"
     if e in MUSIC_EXTS:
         return "audio"
+    if e == ".pdf":
+        return "pdf"
     return "other"
 
 
@@ -322,6 +329,7 @@ def project_detail(name):
 
     outputs = {
         "premiere": os.path.exists(os.path.join(d, "premiere_sequence.xml")),
+        "videopad": os.path.exists(os.path.join(d, "videopad_project.vpj")),
         "video": os.path.exists(os.path.join(d, "recap_final.mp4")),
         "srt": os.path.exists(os.path.join(d, "recap_subtitles.srt")),
         "onscreen_srt": os.path.exists(os.path.join(d, "recap_onscreen.srt")),
@@ -345,7 +353,7 @@ def project_detail(name):
     root_media = []
     for f in os.listdir(d):
         full = os.path.join(d, f)
-        if os.path.isfile(full) and f.lower().endswith(VIDEO_EXTS + IMAGE_EXTS) \
+        if os.path.isfile(full) and f.lower().endswith(VIDEO_EXTS + IMAGE_EXTS + COMIC_EXTS) \
                 and not f.lower().startswith("tiktok_"):
             root_media.append({"name": f, "size": os.path.getsize(full), "kind": preview_kind(f)})
 
@@ -383,8 +391,8 @@ def load_segments(name):
 # jobs (run engine steps in the background, stream logs)
 # ---------------------------------------------------------------------------
 STEP_LABELS = {"init": "Project setup", "subs": "Extract subtitles", "index": "Index footage",
-               "sheets": "Contact sheets", "collect": "Collect footage", "collect_one": "Download / attach shot",
-               "tts": "Voice-over", "review": "Review sheet", "premiere": "Build Premiere XML",
+               "sheets": "Contact sheets", "comic": "Import comic", "collect": "Collect footage", "collect_one": "Download / attach shot",
+               "tts": "Voice-over", "review": "Review sheet", "premiere": "Build Premiere XML", "videopad": "Build VideoPad project",
                "video": "Build full video", "srt": "Build subtitles", "tiktok": "Build TikTok",
                "check": "Status check", "demo": "Demo media"}
 PROCS = {}           # job id -> subprocess.Popen (kept out of the JSON payload)
@@ -950,12 +958,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         ensure_engine(name)
         step = (body or {}).get("step")
-        if step not in ("init", "subs", "index", "sheets", "collect", "tts", "review",
-                        "premiere", "video", "srt", "tiktok", "check", "demo"):
+        if step not in ("init", "subs", "index", "sheets", "comic", "collect", "tts", "review",
+                        "premiere", "videopad", "video", "srt", "tiktok", "check", "demo"):
             return self.send_json({"error": "unknown step: %s" % step}, 400)
         flags = (body or {}).get("flags") or {}
         args = []
-        for f in ("preview", "force", "yes", "retry", "pick"):
+        for f in ("preview", "force", "yes", "retry", "pick", "simple"):
             if flags.get(f):
                 args.append("--" + f)
         if flags.get("import"):
@@ -1043,8 +1051,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "no file data received"}, 400)
         if folder == "root":
             # the film itself: "Extract subtitles" and single-film recaps look in the project root
-            if not fname.lower().endswith(VIDEO_EXTS):
-                return self.send_json({"error": "Only video files can go in the project root."}, 400)
+            if not fname.lower().endswith(VIDEO_EXTS + COMIC_EXTS):
+                return self.send_json({"error": "Only video files or comic files (.cbz .cbr .pdf) can go in the project root."}, 400)
             dest = os.path.join(d, fname)
         else:
             os.makedirs(os.path.join(d, folder), exist_ok=True)
