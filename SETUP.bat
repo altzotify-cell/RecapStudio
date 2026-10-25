@@ -1,7 +1,12 @@
 @echo off
 cd /d "%~dp0"
-title Recap Studio - One-time setup
+title Recap Studio - Setup
 echo.
+echo  RECAP STUDIO SETUP
+echo  Everything is installed from here: base tools first, then YOU choose which voice engines
+echo  and models to download. Run this file again any time to add more.
+echo.
+
 echo [1/3] Checking Python...
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
@@ -10,8 +15,8 @@ if not defined PY goto nopython
 %PY% --version
 
 echo.
-echo [2/3] Installing Python packages (requests, edge-tts, yt-dlp, pillow, numpy, pymupdf, kokoro-onnx)...
-%PY% -m pip install --upgrade requests edge-tts yt-dlp pillow numpy pymupdf kokoro-onnx soundfile
+echo [2/3] Installing base packages (requests, yt-dlp, pillow, numpy, pymupdf)...
+%PY% -m pip install --upgrade requests yt-dlp pillow numpy pymupdf
 if errorlevel 1 goto pipfail
 
 echo.
@@ -21,8 +26,11 @@ if errorlevel 1 goto noffmpeg
 where ffprobe >nul 2>nul
 if errorlevel 1 goto noffmpeg
 echo FFmpeg OK.
+
 echo.
-echo ===== Setup complete. Double-click NEW_PROJECT.bat to start. =====
+%PY% setup_engines.py
+echo.
+echo ===== Setup finished. Double-click NEW_PROJECT.bat to start. =====
 goto end
 
 :nopython

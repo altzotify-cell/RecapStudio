@@ -11,6 +11,9 @@ THE UI (recommended):   double-click START_UI.bat
 Terminal flow (legacy):
    New video:      double-click NEW_PROJECT.bat (or drag a film onto it)
                    -> a project folder opens. Run MENU.bat there.
+Voices: SETUP.bat is the ONLY installer. It asks which engines you want (Edge, Kokoro, Pocket TTS,
+                   Chatterbox) and, for Chatterbox, which model (Nano 110M light / Turbo 350M / Original / Multilingual).
+                   Run it again any time to add more. Clone a voice: put a clip in the voices folder.
 API keys:          in the UI click "API keys" (or edit keys.env). Edge-TTS needs no key.
 GUIDE:             in the UI click "Step-by-step guide" - how to make every video type.
 

@@ -1,53 +1,21 @@
-# ===== Secrets (NEVER commit these) =====
+# secrets - NEVER commit
 keys.env
-.env
-.env.*
-!.env.example
-*.pem
-*.key
+*.env
+!keys.env.example
 
-# ===== Python =====
-__pycache__/
-*.py[cod]
-*$py.class
-.venv/
-venv/
-env/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# ===== Node / frontend =====
-node_modules/
-dist/
-build/
-.vite/
-*.log
-
-# ===== Generated media & project output =====
-# Large binaries - use Git LFS or keep out of git
-*.mp4
-*.mov
-*.avi
-*.mkv
-*.webm
-*.mp3
-*.wav
-*.srt
-*.prproj
-*.xml
-!_template/*.xml
-
-# ===== Local TTS models (Kokoro: ~350 MB, auto-downloaded) =====
+# installed engines + downloaded models (several GB, recreated by SETUP.bat)
+venvs/
 models/
-*.onnx
-*.onnx.part
 
-# ===== OS / editor =====
-.DS_Store
-Thumbs.db
-Thumbs.db:encryptable
-desktop.ini
-.idea/
-.vscode/
-*.swp
+# your work
+Projects/*
+!Projects/.gitkeep
+_voicelab/
+
+# reference voices you cloned (personal recordings)
+voices/*
+!voices/README.txt
+
+__pycache__/
+*.pyc
+*.part

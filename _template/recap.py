@@ -37,6 +37,8 @@ import textwrap
 import time
 import urllib.parse
 import uuid
+import wave
+import atexit
 import webbrowser
 import xml.etree.ElementTree as ET
 
@@ -111,6 +113,25 @@ DEFAULT_CONFIG = {
         "kokoro_mix": 0,              # percent of voice 2 (0 = off)
         "kokoro_sentence_pause": 0.25,   # seconds of silence after a sentence (lower = more conversational)
         "kokoro_clause_pause": 0.1,      # seconds after a comma / clause
+        # ---- Chatterbox (local, PyTorch, voice cloning, Turbo tags) ----
+        "chatterbox_variant": "turbo",   # turbo (350M, [laugh] tags) | english (500M, exaggeration) | multilingual (23 languages)
+        "chatterbox_voice": "",          # reference clip for zero-shot cloning: file in voices/ or a full path ("" = built-in voice)
+        "chatterbox_language": "en",     # multilingual only
+        "chatterbox_exaggeration": 0.5,  # english/multilingual: emotion intensity 0.25 (flat) .. 2.0 (dramatic)
+        "chatterbox_cfg_weight": 0.5,    # english/multilingual: pacing / adherence (lower = slower, more deliberate)
+        "chatterbox_temperature": 0.8,
+        "chatterbox_seed": 0,            # 0 = random; a number makes a take repeatable
+        "chatterbox_speed": 1.0,         # post-process tempo (pitch is kept)
+        "chatterbox_device": "auto",     # auto | cuda | mps | cpu
+        "chatterbox_sentence_pause": 0.25,
+        # ---- Pocket TTS (Kyutai, 100M, CPU real-time, voice cloning) ----
+        "pocket_voice": "alba",          # built-in name, a file in voices/, a path, or an hf:// url
+        "pocket_temperature": 0.7,
+        "pocket_lsd_steps": 1,           # decoding steps: more = cleaner (slower)
+        "pocket_eos_threshold": -4.0,    # higher = stops sooner
+        "pocket_speed": 1.0,
+        "pocket_sentence_pause": 0.25,
+        "tts_normalize": True,           # level every clip to the same loudness (Chatterbox / Pocket)
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
@@ -1298,8 +1319,29 @@ KOKORO_VOICES = [   # every English voice in the Kokoro v1.0 model (same list as
 ]
 KOKORO_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 KOKORO_FILES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
+CHATTERBOX_VARIANTS = [
+    ("nano", "Nano 110M - lightest, CPU-friendly, English, [laugh] tags"),
+    ("turbo", "Turbo 350M - English, [laugh] [sigh] tags, fastest"),
+    ("english", "Original 500M - English, exaggeration + pacing controls"),
+    ("multilingual", "Multilingual 500M - 23 languages"),
+]
+CHATTERBOX_LANGS = [
+    ("ar", "Arabic"), ("da", "Danish"), ("de", "German"), ("el", "Greek"), ("en", "English"), ("es", "Spanish"),
+    ("fi", "Finnish"), ("fr", "French"), ("he", "Hebrew"), ("hi", "Hindi"), ("it", "Italian"), ("ja", "Japanese"),
+    ("ko", "Korean"), ("ms", "Malay"), ("nl", "Dutch"), ("no", "Norwegian"), ("pl", "Polish"), ("pt", "Portuguese"),
+    ("ru", "Russian"), ("sv", "Swedish"), ("sw", "Swahili"), ("tr", "Turkish"), ("zh", "Chinese"),
+]
+# paralinguistic tags the Turbo model performs (anything else in [brackets] is stripped so it is never read aloud)
+CHATTERBOX_TAGS = ("laugh", "chuckle", "cough", "sigh", "gasp", "groan", "yawn", "sniff", "clearing_throat")
+POCKET_VOICES = [
+    ("alba", "Alba"), ("marius", "Marius"), ("javert", "Javert"), ("jean", "Jean"),
+    ("fantine", "Fantine"), ("cosette", "Cosette"), ("eponine", "Eponine"), ("azelma", "Azelma"),
+]
+LOCAL_WORKER_ENGINES = ("chatterbox", "pocket")
 ENGINES = [("edge", "Edge-TTS    (free, unlimited)"),
            ("kokoro", "Kokoro      (free, runs on your PC, offline)"),
+           ("chatterbox", "Chatterbox  (free, local, voice cloning, emotion + [laugh] tags)"),
+           ("pocket", "Pocket TTS  (free, local, CPU-friendly, voice cloning)"),
            ("elevenlabs", "ElevenLabs  (multi-key, premade voices)"),
            ("minimax", "MiniMax     (multi-key, speech-2.6-hd)")]
 
@@ -1407,6 +1449,7 @@ def kokoro_download(folder):
 
 
 SEG_SPEED = 1.0     # set by step_tts before each clip: this segment's "speed" multiplier
+SPEED_ENGINES = ("kokoro", "chatterbox", "pocket")   # engines that honour a per-segment "speed"
 
 
 def seg_speed(seg):
@@ -1432,11 +1475,8 @@ def make_kokoro(cfg, pick):
     voice2 = t.get("kokoro_voice2") or ""
     mix = max(0.0, min(100.0, float(t.get("kokoro_mix", 0) or 0))) / 100.0
     folder = kokoro_model_dir()
-    try:
-        kokoro_download(folder)
-    except Exception as e:
-        die(f"Could not download the Kokoro model ({e}).\nDownload these two files by hand into {folder}:\n"
-            + "\n".join(f"  {KOKORO_BASE}{f}" for f in KOKORO_FILES))
+    if not all(os.path.isfile(os.path.join(folder, f)) for f in KOKORO_FILES):
+        die("The Kokoro model is not downloaded. Double-click SETUP.bat in the main Recap Studio folder and pick Kokoro.")
     k = Kokoro(os.path.join(folder, KOKORO_FILES[0]), os.path.join(folder, KOKORO_FILES[1]))
     style = voice
     if voice2 and voice2 != voice and mix > 0:
@@ -1475,6 +1515,264 @@ def make_kokoro(cfg, pick):
             raise RuntimeError("ffmpeg could not make the mp3: " + tail(r.stderr))
         return True
     return runner
+
+
+# ---------- local worker engines: Chatterbox + Pocket TTS ----------
+def studio_base():
+    """The Recap Studio folder (holds venvs/, voices/, models/). Found by walking up from the project."""
+    for d in (ROOT, os.path.dirname(ROOT), os.path.dirname(os.path.dirname(ROOT))):
+        if os.path.isfile(os.path.join(d, "SETUP.bat")) or os.path.isfile(os.path.join(d, "studio.py")):
+            return d
+    return ROOT
+
+
+def engine_python(name):
+    base = os.path.join(studio_base(), "venvs", name)
+    for rel in (("Scripts", "python.exe"), ("bin", "python")):
+        p = os.path.join(base, *rel)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def installed_state():
+    """models/engines.json written by SETUP.bat ({} on an install that predates it: then nothing is blocked)."""
+    try:
+        with open(os.path.join(studio_base(), "models", "engines.json"), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def resolve_voice_ref(value, allow_builtin=False):
+    """voices/<name>[.wav|.mp3|.flac|.m4a|.ogg], a full path, an hf:// url or (Pocket) a built-in voice name."""
+    v = str(value or "").strip()
+    if not v:
+        return ""
+    if v.startswith(("hf://", "http://", "https://")):
+        return v
+    if os.path.isabs(v) and os.path.isfile(v):
+        return v
+    vd = os.path.join(studio_base(), "voices")
+    for cand in (v, v + ".wav", v + ".mp3", v + ".flac", v + ".m4a", v + ".ogg"):
+        p = os.path.join(vd, cand)
+        if os.path.isfile(p):
+            return p
+    if allow_builtin:
+        return v
+    die(f"Reference voice '{v}' was not found. Put a clean 5-15 second clip in:\n  {vd}\n(or give a full path).")
+
+
+class TTSWorker:
+    """One long-lived process inside the engine's venv; the model stays loaded between clips."""
+
+    def __init__(self, engine, params):
+        py = engine_python(engine)
+        if not py:
+            die(f"{engine} is not installed yet. Double-click SETUP.bat in the main Recap Studio folder and pick it.")
+        script = os.path.join(studio_base(), "tts_worker.py")
+        if not os.path.isfile(script):
+            die(f"tts_worker.py is missing from {studio_base()}.")
+        env = dict(os.environ)
+        env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+                    "HF_HOME": os.path.join(studio_base(), "models", "hf"), "TOKENIZERS_PARALLELISM": "false"})
+        self.engine = engine
+        self.proc = subprocess.Popen([py, script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,
+                                     text=True, encoding="utf-8", bufsize=1, env=env)
+        atexit.register(self.close)
+        r = self._call({"cmd": "load", "engine": engine, "params": params})
+        self.info = r.get("info", engine)
+
+    def _call(self, msg):
+        try:
+            self.proc.stdin.write(json.dumps(msg) + "\n")
+            self.proc.stdin.flush()
+            line = self.proc.stdout.readline()
+        except (BrokenPipeError, OSError):
+            line = ""
+        if not line:
+            die(f"The {self.engine} worker stopped unexpectedly. Scroll up for its error message "
+                f"(a missing GPU driver or out-of-memory are the usual causes).")
+        r = json.loads(line)
+        if not r.get("ok"):
+            raise RuntimeError(r.get("error", "unknown worker error"))
+        return r
+
+    def say(self, text, out, params):
+        return self._call({"cmd": "say", "text": text, "out": out, "params": params})
+
+    def close(self):
+        try:
+            if self.proc and self.proc.poll() is None:
+                self.proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
+                self.proc.stdin.flush()
+                self.proc.wait(timeout=5)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
+PAUSE_RE = re.compile(r"\[(long )?pause\]", re.I)
+
+
+def split_for_engine(text, max_chars):
+    """-> list of ("text", str) / ("pause", seconds). [pause] / [long pause] become real silence;
+    sentences are grouped into chunks <= max_chars (long clips drift or truncate on these models)."""
+    out = []
+    pos = 0
+    pieces = []
+    for m in PAUSE_RE.finditer(text):
+        pieces.append(("text", text[pos:m.start()]))
+        pieces.append(("pause", 1.2 if m.group(1) else 0.6))
+        pos = m.end()
+    pieces.append(("text", text[pos:]))
+    for kind, val in pieces:
+        if kind == "pause":
+            out.append((kind, val))
+            continue
+        val = " ".join(val.split())
+        if not val:
+            continue
+        sents = re.split(r"(?<=[.!?\u2026])\s+", val)
+        cur = ""
+        for sn in sents:
+            while len(sn) > max_chars:                      # one monster sentence: cut at a comma / space
+                cut = max(sn.rfind(",", 0, max_chars), sn.rfind(";", 0, max_chars), sn.rfind(" ", 0, max_chars))
+                cut = cut if cut > 40 else max_chars
+                if cur:
+                    out.append(("text", cur)); cur = ""
+                out.append(("text", sn[:cut + 1].strip()))
+                sn = sn[cut + 1:].strip()
+            if not sn:
+                continue
+            if cur and len(cur) + 1 + len(sn) > max_chars:
+                out.append(("text", cur)); cur = sn
+            else:
+                cur = (cur + " " + sn).strip()
+        if cur:
+            out.append(("text", cur))
+    return out
+
+
+def wav_join(parts, out_wav):
+    """parts: [("wav", path) | ("pause", seconds)] -> one mono 16-bit wav (all chunks share one sample rate)."""
+    sr = None
+    frames = []
+    for kind, val in parts:
+        if kind == "wav":
+            with wave.open(val, "rb") as w:
+                if sr is None:
+                    sr = w.getframerate()
+                frames.append(w.readframes(w.getnframes()))
+        else:
+            frames.append(None if sr is None else b"\x00\x00" * int(sr * val))
+    if sr is None:
+        raise RuntimeError("the model returned no audio")
+    with wave.open(out_wav, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        for f in frames:
+            if f:
+                w.writeframes(f)
+    return sr
+
+
+def wav_to_mp3(wav, out, speed, normalize):
+    """speed uses atempo (keeps pitch); normalize levels clips so a whole video sounds consistent."""
+    filters = []
+    sp = max(0.5, min(2.0, float(speed or 1.0)))
+    if abs(sp - 1.0) > 0.005:
+        filters.append(f"atempo={sp:.4f}")
+    if normalize:
+        filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", wav]
+    if filters:
+        cmd += ["-af", ",".join(filters)]
+    cmd += ["-ac", "1", "-ar", "44100", "-b:a", "160k", "-f", "mp3", out]
+    r = run(cmd)
+    if r.returncode != 0:
+        raise RuntimeError("ffmpeg could not make the mp3: " + tail(r.stderr))
+
+
+def make_worker_runner(worker, base_params, max_chars, pause_s, speed, normalize):
+    def runner(text, out):
+        chunks = split_for_engine(text, max_chars)
+        if not any(k == "text" for k, _ in chunks):
+            raise RuntimeError("nothing to speak")
+        tmp_dir = out + ".chunks"
+        os.makedirs(tmp_dir, exist_ok=True)
+        parts = []
+        try:
+            n = 0
+            for i, (kind, val) in enumerate(chunks):
+                if kind == "pause":
+                    parts.append(("pause", val))
+                    continue
+                n += 1
+                wavp = os.path.join(tmp_dir, f"c{i:03d}.wav")
+                worker.say(val, wavp, base_params)
+                if parts and parts[-1][0] == "wav":
+                    parts.append(("pause", pause_s))      # natural gap between two sentence groups
+                parts.append(("wav", wavp))
+            joined = os.path.join(tmp_dir, "joined.wav")
+            wav_join(parts, joined)
+            wav_to_mp3(joined, out, speed * SEG_SPEED, normalize)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return True
+    return runner
+
+
+def make_chatterbox(cfg, pick):
+    t = cfg["tts"]
+    if pick:
+        t["chatterbox_variant"] = ask_choice("Chatterbox model:", CHATTERBOX_VARIANTS)
+        if t["chatterbox_variant"] == "multilingual":
+            t["chatterbox_language"] = ask_choice("Language:", CHATTERBOX_LANGS, 5)
+        save_config(cfg)
+    variant = t.get("chatterbox_variant") or "turbo"
+    have = installed_state().get("chatterbox")
+    if have is not None and variant not in have:
+        die(f"The Chatterbox '{variant}' model was not downloaded. Run SETUP.bat, choose Chatterbox and tick it"
+            f"{' (installed: ' + ', '.join(have) + ')' if have else ''}.")
+    ref = resolve_voice_ref(t.get("chatterbox_voice"))
+    params = {
+        "variant": variant, "device": t.get("chatterbox_device", "auto"),
+        "voice_ref": ref, "language": t.get("chatterbox_language", "en"),
+        "exaggeration": t.get("chatterbox_exaggeration", 0.5), "cfg_weight": t.get("chatterbox_cfg_weight", 0.5),
+        "temperature": t.get("chatterbox_temperature", 0.8), "seed": t.get("chatterbox_seed", 0),
+    }
+    print(f"Engine: Chatterbox {variant} | Voice: {os.path.basename(ref) if ref else 'built-in'} "
+          f"| Speed: {t.get('chatterbox_speed', 1.0)}")
+    print("Loading the model (the first run downloads ~1-3 GB, later runs take 10-30 s) ...")
+    worker = TTSWorker("chatterbox", params)
+    print(f"[+] {worker.info}")
+    if "cpu" in worker.info and variant != "nano":
+        print("[i] No GPU found - Chatterbox on CPU is slow (often 30-120 s per clip). "
+              "Use Pocket TTS or Kokoro for long videos, or an NVIDIA GPU.")
+    return make_worker_runner(worker, params, 300, float(t.get("chatterbox_sentence_pause", 0.25)),
+                              float(t.get("chatterbox_speed", 1.0) or 1.0), bool(t.get("tts_normalize", True)))
+
+
+def make_pocket(cfg, pick):
+    t = cfg["tts"]
+    if pick:
+        t["pocket_voice"] = ask_choice("Pocket TTS voices:", POCKET_VOICES)
+        save_config(cfg)
+    voice = resolve_voice_ref(t.get("pocket_voice") or "alba", allow_builtin=True)
+    params = {
+        "voice": voice, "temperature": t.get("pocket_temperature", 0.7),
+        "lsd_decode_steps": t.get("pocket_lsd_steps", 1), "eos_threshold": t.get("pocket_eos_threshold", -4.0),
+    }
+    print(f"Engine: Pocket TTS | Voice: {os.path.basename(voice) if os.path.isfile(voice) else voice} "
+          f"| Speed: {t.get('pocket_speed', 1.0)}")
+    worker = TTSWorker("pocket", params)
+    print(f"[+] {worker.info}")
+    return make_worker_runner(worker, params, 500, float(t.get("pocket_sentence_pause", 0.25)),
+                              float(t.get("pocket_speed", 1.0) or 1.0), bool(t.get("tts_normalize", True)))
 
 
 def make_elevenlabs(cfg, pick):
@@ -1604,17 +1902,36 @@ def verify_voice_on_keys(pool, voice_id):
 
 
 def keeps_tags(engine, cfg):
-    """Tags stay in the text only for ElevenLabs v3 and only when project.json tts_mode isn't plain.
-    Every other engine/model would READ THEM ALOUD, so they are stripped."""
-    return (engine == "elevenlabs" and "v3" in str(cfg["tts"].get("elevenlabs_model", "")).lower()
-            and PROJECT.get("tts_mode", "plain") != "plain")
+    """Tags stay in the text only where the engine PERFORMS them (ElevenLabs v3, Chatterbox Turbo) and only
+    when project.json tts_mode isn't plain. Every other engine/model would READ THEM ALOUD, so they are stripped."""
+    if PROJECT.get("tts_mode", "plain") == "plain":
+        return False
+    if engine == "elevenlabs":
+        return "v3" in str(cfg["tts"].get("elevenlabs_model", "")).lower()
+    if engine == "chatterbox":
+        return (cfg["tts"].get("chatterbox_variant") or "turbo") in ("turbo", "nano")
+    return False
+
+
+def engine_text(text, engine, cfg):
+    """Prepare narration for an engine: keep the tags it performs, strip the rest."""
+    t = str(text).replace("*", "")
+    if engine == "elevenlabs" and keeps_tags(engine, cfg):
+        return " ".join(t.split())
+    if engine in LOCAL_WORKER_ENGINES:
+        keep = set(CHATTERBOX_TAGS) if keeps_tags(engine, cfg) else set()
+
+        def one(m):
+            name = m.group(0)[1:-1].strip().lower().replace(" ", "_")
+            if name in ("pause", "long_pause"):
+                return m.group(0)                      # becomes real silence in split_for_engine
+            return m.group(0) if name in keep else " "
+        return " ".join(TAG_RE.sub(one, t).split())
+    return strip_tags(t)
 
 
 def voice_text(seg, engine, cfg):
-    t = str(seg.get("narration", "")).strip()
-    if keeps_tags(engine, cfg):
-        return " ".join(t.replace("*", "").split())
-    return strip_tags(t)
+    return engine_text(str(seg.get("narration", "")).strip(), engine, cfg)
 
 
 def tts_signature(engine, cfg):
@@ -1626,6 +1943,26 @@ def tts_signature(engine, cfg):
     if engine == "kokoro":
         return (f"kk|{t.get('kokoro_voice')}|{t.get('kokoro_speed')}|{t.get('kokoro_voice2')}|{t.get('kokoro_mix')}"
                 f"|{t.get('kokoro_sentence_pause')}|{t.get('kokoro_clause_pause')}")
+    if engine == "chatterbox":
+        ref = ""
+        try:
+            rp = resolve_voice_ref(t.get("chatterbox_voice"))
+            ref = f"{os.path.basename(rp)}:{os.path.getsize(rp)}" if rp and os.path.isfile(rp) else rp
+        except SystemExit:
+            ref = "missing"
+        return (f"cb|{t.get('chatterbox_variant')}|{ref}|{t.get('chatterbox_language')}|{t.get('chatterbox_exaggeration')}"
+                f"|{t.get('chatterbox_cfg_weight')}|{t.get('chatterbox_temperature')}|{t.get('chatterbox_seed')}"
+                f"|{t.get('chatterbox_speed')}|{t.get('chatterbox_sentence_pause')}|{t.get('tts_normalize')}")
+    if engine == "pocket":
+        pv = str(t.get("pocket_voice"))
+        try:
+            rp = resolve_voice_ref(pv, allow_builtin=True)
+            if os.path.isfile(rp):
+                pv = f"{os.path.basename(rp)}:{os.path.getsize(rp)}"
+        except SystemExit:
+            pass
+        return (f"pk|{pv}|{t.get('pocket_temperature')}|{t.get('pocket_lsd_steps')}|{t.get('pocket_eos_threshold')}"
+                f"|{t.get('pocket_speed')}|{t.get('pocket_sentence_pause')}|{t.get('tts_normalize')}")
     return f"edge|{t.get('edge_voice')}|{t.get('edge_rate')}"
 
 
@@ -1689,11 +2026,12 @@ def step_tts(args):
             os.remove(f)
         save_manifest({})
 
-    maker = {"edge": make_edge, "kokoro": make_kokoro, "elevenlabs": make_elevenlabs, "minimax": make_minimax}.get(engine, make_edge)
+    maker = {"edge": make_edge, "kokoro": make_kokoro, "chatterbox": make_chatterbox, "pocket": make_pocket,
+             "elevenlabs": make_elevenlabs, "minimax": make_minimax}.get(engine, make_edge)
     generate = maker(cfg, args.pick)
     sig = tts_signature(engine, cfg)
     tagged = keeps_tags(engine, cfg)
-    print(f"Tags: {'KEPT (ElevenLabs v3, mode ' + PROJECT.get('tts_mode', 'plain') + ')' if tagged else 'stripped (plain text goes to the voice)'}")
+    print(f"Tags: {'KEPT (' + ('Chatterbox Turbo' if engine == 'chatterbox' else 'ElevenLabs v3') + ', mode ' + PROJECT.get('tts_mode', 'plain') + ')' if tagged else 'stripped (plain text goes to the voice)'}")
 
     only = [x.strip() for x in (args.only or "").split(",") if x.strip()]
     preview = bool(args.preview)
@@ -1720,7 +2058,7 @@ def step_tts(args):
         sid = s["id"]
         text = voice_text(s, engine, cfg)
         out = os.path.join(out_dir, f"{sid}.mp3")
-        th = h8(text + (f"|spd{seg_speed(s)}" if engine == "kokoro" and seg_speed(s) != 1.0 else ""))
+        th = h8(text + (f"|spd{seg_speed(s)}" if engine in SPEED_ENGINES and seg_speed(s) != 1.0 else ""))
         if preview or (only and not preview):
             plan.append((s, text, out, th, "preview" if preview else "re-voice (asked)"))
             continue
@@ -1759,7 +2097,7 @@ def step_tts(args):
         print(f"[{i}/{len(plan)}] {sid} ({len(text)} chars, {why})...", end="", flush=True)
         before = POOLS[-1].idx if POOLS else 0
         global SEG_SPEED
-        SEG_SPEED = seg_speed(s) if engine == "kokoro" else 1.0
+        SEG_SPEED = seg_speed(s) if engine in SPEED_ENGINES else 1.0
         ok, retried = gen_with_retry(generate, text, out)
         after = POOLS[-1].idx if POOLS else 0
         if ok:
@@ -3143,6 +3481,10 @@ def step_check(args):
     for t in ("ffmpeg", "ffprobe"):
         print(f"  {t:<9} {'OK' if shutil.which(t) else 'MISSING  -> run SETUP.bat'}")
     print(f"  {'yt-dlp':<9} {'OK' if ytdlp_cmd() else 'MISSING  -> run SETUP.bat (only needed for the collect step)'}")
+    eng = CFG["tts"].get("engine")
+    for name in ("chatterbox", "pocket"):
+        if eng == name:
+            print(f"  {name:<9} {'OK' if engine_python(name) else 'MISSING  -> run SETUP.bat (main folder)'}")
     for mod in ("requests", "edge_tts") + (("kokoro_onnx",) if CFG["tts"].get("engine") == "kokoro" else ()) + (("PIL", "numpy", "fitz") if MODULE == "comic_recap" else ()):
         try:
             __import__(mod)
@@ -4056,15 +4398,17 @@ def step_say(args):
     if engine == "elevenlabs" and not t.get("elevenlabs_voice_id"):
         t["elevenlabs_voice_id"] = "21m00Tcm4TlvDq8ikWAM"      # Rachel, so the Voice Lab never waits on a question
     v3 = engine == "elevenlabs" and str(t.get("elevenlabs_model", "eleven_v3")).lower() == "eleven_v3"
-    text = " ".join(text.replace("*", "").split()) if v3 else strip_tags(text)
+    if engine == "chatterbox" and (t.get("chatterbox_variant") or "turbo") == "turbo":
+        PROJECT["tts_mode"] = "light"                  # Voice Lab: let Turbo perform [laugh] etc.
+    text = " ".join(text.replace("*", "").split()) if v3 else engine_text(text, engine, cfg)
     if not text:
         die("Only tags were found - nothing to speak.")
     try:
-        SEG_SPEED = max(0.6, min(1.4, float(t.get("seg_speed", 1) or 1))) if engine == "kokoro" else 1.0
+        SEG_SPEED = max(0.6, min(1.4, float(t.get("seg_speed", 1) or 1))) if engine in SPEED_ENGINES else 1.0
     except (TypeError, ValueError):
         SEG_SPEED = 1.0
-    maker = {"edge": make_edge, "kokoro": make_kokoro, "elevenlabs": make_elevenlabs,
-             "minimax": make_minimax}.get(engine, make_edge)
+    maker = {"edge": make_edge, "kokoro": make_kokoro, "chatterbox": make_chatterbox, "pocket": make_pocket,
+             "elevenlabs": make_elevenlabs, "minimax": make_minimax}.get(engine, make_edge)
     generate = maker(cfg, False)
     tmp = args.out + ".part"
     try:
@@ -4099,7 +4443,7 @@ def main():
     ap.add_argument("--import", dest="do_import", action="store_true", help="review: import edits from the CSV")
     ap.add_argument("--simple", action="store_true", help="videopad: picture + voice only (one muxed file per segment)")
     ap.add_argument("--retry", action="store_true", help="collect: ask again for skipped shots")
-    ap.add_argument("--engine", choices=("edge", "kokoro", "elevenlabs", "minimax"), help="tts: skip the engine prompt")
+    ap.add_argument("--engine", choices=("edge", "kokoro", "chatterbox", "pocket", "elevenlabs", "minimax"), help="tts: skip the engine prompt")
     ap.add_argument("--yes", action="store_true", help="auto-confirm destructive / re-voice prompts")
     ap.add_argument("--id", help="collect_one: segment id")
     ap.add_argument("--url", help="collect_one: source URL")

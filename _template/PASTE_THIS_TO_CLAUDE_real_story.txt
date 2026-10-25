@@ -31,7 +31,7 @@ OPTIONAL FIELDS (leave out what you don't need - missing = old behaviour)
                  "fallback": "generic b-roll idea" }
 - need_visual  true when you can't tell what is on screen; I will send contact sheets.
 - subtitle     real spelling for captions when you respelled a name for the voice.
-- speed       Kokoro voice only: speaking-speed multiplier for THIS segment (1.0 = normal, 0.85 = slower for dramatic
+- speed       Kokoro / Chatterbox / Pocket TTS only: speaking-speed multiplier for THIS segment (1.0 = normal, 0.85 = slower for dramatic
                or emotional beats, 1.15 = faster for action / jokes). Range 0.6-1.4. Leave out when normal.
 
 GENERAL RULES
@@ -51,6 +51,11 @@ VOICE TEXT ("tts_mode" in project.json)
 - kokoro : (free local voice, no tags) like plain, but write it the way people TALK: contractions, short sentences and
           fragments, commas where a person would breathe, "..." for a beat, "?" and "!" for tone. Respell hard names
           in "narration" (real spelling in "subtitle"). Use "speed" to slow dramatic lines or speed up action.
+- chatterbox / pocket : (free local voices) write like kokoro. Chatterbox Turbo can also PERFORM these tags, used sparingly
+          (about 1 per 5-8 segments, only if tts_mode is light/heavy): [chuckle] [laugh] [sigh] [gasp] [cough] [groan]
+          [yawn] [sniff] [clearing_throat]. Place a tag where the sound happens, e.g. "Well, [chuckle] that went badly."
+          Never use [excited]/[whispers]-style tags for these engines. [pause] (0.6 s) and [long pause] (1.2 s) work on both.
+          Keep each segment under ~60 words: these models drift on very long passages.
 - Respell names phonetically in "narration" only if the voice mispronounces them (e.g. Stoick -> "Stoyk"), and
   put the real spelling in "subtitle".
 - If I ask for two files, give segments_edge.json (plain) and segments_elevenlabs.json (tagged) with identical

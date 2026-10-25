@@ -28,8 +28,10 @@ PROJECTS = os.path.join(BASE, "Projects")
 WEB = os.path.join(BASE, "web")
 ENGINE_SRC = os.path.join(TEMPLATE, "recap.py")
 LAB_DIR = os.path.join(BASE, "_voicelab")      # scratch folder for the Voice Lab (no project needed)
-LAB_ENGINES = ("edge", "kokoro", "elevenlabs", "minimax")
-LAB_KEYS = ("edge_", "kokoro_", "elevenlabs_", "minimax_", "seg_speed")
+LAB_ENGINES = ("edge", "kokoro", "chatterbox", "pocket", "elevenlabs", "minimax")
+LAB_KEYS = ("edge_", "kokoro_", "chatterbox_", "pocket_", "elevenlabs_", "minimax_", "seg_speed", "tts_normalize")
+VOICES_DIR = os.path.join(BASE, "voices")        # reference clips for voice cloning (Chatterbox / Pocket TTS)
+VOICE_EXTS = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
 PY = sys.executable
 
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".mts",
@@ -54,6 +56,8 @@ DEFAULT_TARGETS = {"movie_recap": "10:00", "show_recap": "10:00", "nba_minidoc":
 ENGINES = [
     ("edge", "Edge-TTS (free, unlimited)"),
     ("kokoro", "Kokoro (free, local, offline)"),
+    ("chatterbox", "Chatterbox (free, local, voice cloning, emotion + [laugh] tags)"),
+    ("pocket", "Pocket TTS (free, local, CPU-friendly, voice cloning)"),
     ("elevenlabs", "ElevenLabs (multi-key, premade voices)"),
     ("minimax", "MiniMax (multi-key, speech-2.6-hd)"),
 ]
@@ -78,6 +82,34 @@ KOKORO_VOICES = [   # every English voice in the Kokoro v1.0 model (same list as
     ("bm_george", "George - UK male, narrator"), ("bm_fable", "Fable - UK male, storyteller"),
     ("bm_lewis", "Lewis - UK male, calm"), ("bm_daniel", "Daniel - UK male"),
 ]
+ENGINES_FILE = os.path.join(BASE, "models", "engines.json")   # written by SETUP.bat
+
+
+def installed_engines():
+    try:
+        with open(ENGINES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+CHATTERBOX_VARIANTS = [
+    ("nano", "Nano 110M - lightest, CPU-friendly, English, [laugh] tags"),
+    ("turbo", "Turbo 350M - English, [laugh] [sigh] tags, fastest"),
+    ("english", "Original 500M - English, exaggeration + pacing controls"),
+    ("multilingual", "Multilingual 500M - 23 languages"),
+]
+CHATTERBOX_LANGS = [
+    ("ar", "Arabic"), ("da", "Danish"), ("de", "German"), ("el", "Greek"), ("en", "English"), ("es", "Spanish"),
+    ("fi", "Finnish"), ("fr", "French"), ("he", "Hebrew"), ("hi", "Hindi"), ("it", "Italian"), ("ja", "Japanese"),
+    ("ko", "Korean"), ("ms", "Malay"), ("nl", "Dutch"), ("no", "Norwegian"), ("pl", "Polish"), ("pt", "Portuguese"),
+    ("ru", "Russian"), ("sv", "Swedish"), ("sw", "Swahili"), ("tr", "Turkish"), ("zh", "Chinese"),
+]
+CHATTERBOX_TAGS = ["laugh", "chuckle", "cough", "sigh", "gasp", "groan", "yawn", "sniff", "clearing_throat"]
+POCKET_VOICES = [
+    ("alba", "Alba"), ("marius", "Marius"), ("javert", "Javert"), ("jean", "Jean"),
+    ("fantine", "Fantine"), ("cosette", "Cosette"), ("eponine", "Eponine"), ("azelma", "Azelma"),
+]
 MINIMAX_VOICES = [
     ("male-qn-qingse", "Male Qingse (calm & clear narrator)"),
     ("presenter_male", "Presenter Male (broadcast voice)"),
@@ -99,6 +131,13 @@ DEFAULT_CONFIG = {
         "elevenlabs_stability": 0.5, "minimax_voice": "male-qn-qingse",
         "kokoro_voice": "am_michael", "kokoro_speed": 1.0, "kokoro_voice2": "", "kokoro_mix": 0,
         "kokoro_sentence_pause": 0.25, "kokoro_clause_pause": 0.1,
+        "chatterbox_variant": "turbo", "chatterbox_voice": "", "chatterbox_language": "en",
+        "chatterbox_exaggeration": 0.5, "chatterbox_cfg_weight": 0.5, "chatterbox_temperature": 0.8,
+        "chatterbox_seed": 0, "chatterbox_speed": 1.0, "chatterbox_device": "auto",
+        "chatterbox_sentence_pause": 0.25,
+        "pocket_voice": "alba", "pocket_temperature": 0.7, "pocket_lsd_steps": 1,
+        "pocket_eos_threshold": -4.0, "pocket_speed": 1.0, "pocket_sentence_pause": 0.25,
+        "tts_normalize": True,
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
@@ -237,6 +276,23 @@ def save_keys(updates):
     os.replace(tmp, p)
 
 
+def venv_python(name):
+    base = os.path.join(BASE, "venvs", name)
+    for rel in (("Scripts", "python.exe"), ("bin", "python")):
+        p = os.path.join(base, *rel)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def voice_files():
+    try:
+        return sorted(f for f in os.listdir(VOICES_DIR)
+                      if f.lower().endswith(VOICE_EXTS) and os.path.isfile(os.path.join(VOICES_DIR, f)))
+    except OSError:
+        return []
+
+
 def tools_status():
     return {
         "python": PY,
@@ -246,6 +302,8 @@ def tools_status():
         "edge_tts": has_module("edge_tts"),
         "requests": has_module("requests"),
         "kokoro": has_module("kokoro_onnx"),
+        "chatterbox": venv_python("chatterbox") is not None,
+        "pocket": venv_python("pocket") is not None,
         "pillow": has_module("PIL"),
         "numpy": has_module("numpy"),
         "pymupdf": has_module("fitz"),
@@ -817,6 +875,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({
                 "modules": MODULES, "engines": ENGINES,
                 "edge_voices": EDGE_VOICES, "minimax_voices": MINIMAX_VOICES, "kokoro_voices": KOKORO_VOICES,
+                "chatterbox_variants": [v for v in CHATTERBOX_VARIANTS if v[0] in (installed_engines().get("chatterbox") or [v[0] for v in CHATTERBOX_VARIANTS])] or CHATTERBOX_VARIANTS,
+                "chatterbox_langs": CHATTERBOX_LANGS if installed_engines().get("languages") == "all" else [l for l in CHATTERBOX_LANGS if l[0] == "en"],
+                "setup_state": installed_engines(),
+                "chatterbox_tags": CHATTERBOX_TAGS, "pocket_voices": POCKET_VOICES, "voice_files": voice_files(),
                 "default_targets": DEFAULT_TARGETS, "default_project": DEFAULT_PROJECT,
                 "default_config": DEFAULT_CONFIG, "tools": tools_status(),
             })
@@ -865,6 +927,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_elevenlabs_voices()
         if path == "/api/voicelab/say":
             return self.api_voicelab_say(self.read_json_body())
+        if path == "/api/voices/upload":
+            return self.api_voice_upload(qs)
         if path == "/api/keys":
             return self.api_save_keys(self.read_json_body())
         m = re.match(r"^/api/jobs/([^/]+)/stop$", path)
@@ -1187,9 +1251,40 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"url": "/api/voicelab/audio/" + os.path.basename(out),
                                    "name": os.path.basename(out), "bytes": os.path.getsize(out)})
         except subprocess.TimeoutExpired:
-            return self.send_json({"error": "Timed out (the first Kokoro run downloads ~350 MB - try again)."}, 504)
+            return self.send_json({"error": "Timed out (the first Kokoro / Chatterbox / Pocket run downloads its model - try again)."}, 504)
         except Exception as e:
             return self.send_json({"error": str(e)}, 500)
+
+    def api_voice_upload(self, qs):
+        """Save a reference clip into voices/ (used for voice cloning)."""
+        fname = safe_name(os.path.basename(q1(qs, "name", "") or "voice.wav"))
+        if not fname.lower().endswith(VOICE_EXTS):
+            return self.send_json({"error": "Use a .wav .mp3 .flac .m4a or .ogg file."}, 400)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            n = 0
+        if n <= 0:
+            return self.send_json({"error": "no file data received"}, 400)
+        if n > 100 * 1024 * 1024:
+            return self.send_json({"error": "That file is too big for a reference clip (max 100 MB). "
+                                            "5-15 seconds is all the model needs."}, 400)
+        os.makedirs(VOICES_DIR, exist_ok=True)
+        dest = os.path.join(VOICES_DIR, fname)
+        tmp = dest + ".part"
+        left = n
+        with open(tmp, "wb") as f:
+            while left > 0:
+                chunk = self.rfile.read(min(1 << 20, left))
+                if not chunk:
+                    break
+                f.write(chunk)
+                left -= len(chunk)
+        if left > 0:
+            os.remove(tmp)
+            return self.send_json({"error": "upload was cut off - try again"}, 400)
+        os.replace(tmp, dest)
+        return self.send_json({"ok": True, "file": fname, "voice_files": voice_files()})
 
     def api_elevenlabs_voices(self):
         key = get_first_key("ELEVENLABS_API_KEY")

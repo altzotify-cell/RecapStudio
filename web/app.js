@@ -113,6 +113,7 @@ function renderTools() {
   const rows = [
     ["FFmpeg", t.ffmpeg], ["ffprobe", t.ffprobe], ["yt-dlp", t.ytdlp],
     ["edge-tts", t.edge_tts], ["requests", t.requests],
+    ["Chatterbox", t.chatterbox], ["Pocket TTS", t.pocket],
     ["ElevenLabs keys", t.keys.ELEVENLABS_API_KEY], ["MiniMax keys", t.keys.MINIMAX_API_KEY],
   ];
   $("toolsStatus").innerHTML =
@@ -968,6 +969,42 @@ async function fetchElevenLabsVoices(p) {
   toast("Loaded " + res.voices.length + " voices");
 }
 
+/* ---- reference-voice field: type a name (autocomplete from voices/) or upload a clip ---- */
+function voiceRefField(inputId, listId, value, names) {
+  return '<div style="display:flex;gap:8px;align-items:center">' +
+    '<input id="' + inputId + '" list="' + listId + '" value="' + esc(value) + '" placeholder="e.g. narrator  (file in voices/)">' +
+    '<datalist id="' + listId + '">' + (names || []).map(n => '<option value="' + esc(n.replace(/\.[^.]+$/, "")) + '">').join("") + '</datalist>' +
+    '<label class="btn small" style="margin:0;cursor:pointer">⬆ Upload clip<input type="file" accept="audio/*" style="display:none" ' +
+      'onchange="uploadVoiceRef(this,\'' + inputId + '\',\'' + listId + '\')"></label>' +
+  '</div>';
+}
+
+async function uploadVoiceRef(input, inputId, listId) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  toast("Uploading " + f.name + "…");
+  try {
+    const r = await fetch("/api/voices/upload?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
+    const j = await r.json();
+    if (j.error) { toast(j.error); return; }
+    state.bootstrap.voice_files = j.voice_files || [];
+    document.getElementById(inputId).value = j.file.replace(/\.[^.]+$/, "");
+    const dl = document.getElementById(listId);
+    if (dl) {
+      const have = Array.from(dl.options).map(o => o.value);
+      (j.voice_files || []).forEach(n => { const b = n.replace(/\.[^.]+$/, ""); if (!have.includes(b)) dl.insertAdjacentHTML("beforeend", '<option value="' + esc(b) + '">'); });
+    }
+    toast("Saved to voices/" + j.file + " ✓");
+  } catch (e) { toast("Upload failed: " + e); }
+  input.value = "";
+}
+
+function cbVariantChange(p) {
+  const v = document.getElementById(p + "CbVariant").value;
+  document.getElementById(p + "CbLangRow").classList.toggle("hidden", v !== "multilingual");
+  document.getElementById(p + "CbEmoRow").classList.toggle("hidden", v === "turbo" || v === "nano");
+}
+
 /* ---- shared voice controls (project Voice tab + Voice Lab) ---- */
 function ttsControlsHTML(p, t, engine) {
   const bs = state.bootstrap;
@@ -989,6 +1026,48 @@ function ttsControlsHTML(p, t, engine) {
       '<p class="muted">Runs on your PC. The first run downloads the ~350 MB model once. No audio tags: they are stripped.' +
         (bs.tools.kokoro ? "" : ' <span class="bad">kokoro-onnx missing (run SETUP.bat)</span>') + '</p>' +
     '</div>' +
+    '<div id="' + p + 'Chatter" class="' + hid("chatterbox") + '">' +
+      '<label>Model</label><select id="' + p + 'CbVariant" onchange="cbVariantChange(\'' + p + '\')">' +
+        opts(bs.chatterbox_variants, t.chatterbox_variant || "turbo") + '</select>' +
+      '<div id="' + p + 'CbLangRow" class="' + ((t.chatterbox_variant || "turbo") === "multilingual" ? "" : "hidden") + '">' +
+        '<label>Language</label><select id="' + p + 'CbLang">' + opts(bs.chatterbox_langs, t.chatterbox_language || "en") + '</select></div>' +
+      '<label>Reference voice - clone any voice from a 5-15 s clip (blank = built-in voice)</label>' +
+      voiceRefField(p + "CbVoice", p + "CbList", t.chatterbox_voice || "", bs.voice_files) +
+      '<div id="' + p + 'CbEmoRow" class="form-row ' + (["turbo", "nano"].includes(t.chatterbox_variant || "turbo") ? "hidden" : "") + '">' +
+        '<div><label>Exaggeration (0.25 flat · 0.5 normal · 1+ dramatic)</label><input id="' + p + 'CbExag" value="' + esc(t.chatterbox_exaggeration != null ? t.chatterbox_exaggeration : 0.5) + '"></div>' +
+        '<div><label>Pacing / CFG (lower = slower, more deliberate)</label><input id="' + p + 'CbCfg" value="' + esc(t.chatterbox_cfg_weight != null ? t.chatterbox_cfg_weight : 0.5) + '"></div>' +
+      '</div>' +
+      '<div class="form-row3">' +
+        '<div><label>Variation (temperature)</label><input id="' + p + 'CbTemp" value="' + esc(t.chatterbox_temperature != null ? t.chatterbox_temperature : 0.8) + '"></div>' +
+        '<div><label>Speed</label><input id="' + p + 'CbSpeed" value="' + esc(t.chatterbox_speed != null ? t.chatterbox_speed : 1.0) + '"></div>' +
+        '<div><label>Seed (0 = random)</label><input id="' + p + 'CbSeed" value="' + esc(t.chatterbox_seed != null ? t.chatterbox_seed : 0) + '"></div>' +
+      '</div>' +
+      '<div class="form-row"><div><label>Pause between sentences (s)</label><input id="' + p + 'CbPause" value="' + esc(t.chatterbox_sentence_pause != null ? t.chatterbox_sentence_pause : 0.25) + '"></div>' +
+        '<div><label>Device</label><select id="' + p + 'CbDevice">' +
+          ["auto", "cuda", "mps", "cpu"].map(d => '<option' + (((t.chatterbox_device || "auto") === d) ? " selected" : "") + '>' + d + '</option>').join("") +
+        '</select></div></div>' +
+      '<label class="chk"><input type="checkbox" id="' + p + 'CbNorm"' + (t.tts_normalize === false ? "" : " checked") + '> Level every clip to the same loudness</label>' +
+      '<p class="muted">Runs on your PC (an NVIDIA GPU is strongly recommended). <b>Nano and Turbo</b> perform tags written in the script: ' +
+        bs.chatterbox_tags.map(x => '<code>[' + x + ']</code>').join(" ") +
+        ' (set the project voice style to light/heavy). <code>[pause]</code> works on every model. ' +
+        'Output carries Resemble AI\'s inaudible Perth watermark.' +
+        (bs.tools.chatterbox ? "" : ' <span class="bad">Not installed: run SETUP.bat and pick Chatterbox, then reload this page.</span>') + '</p>' +
+    '</div>' +
+    '<div id="' + p + 'Pocket" class="' + hid("pocket") + '">' +
+      '<label>Voice - pick one, or type a file name from voices/ / a path / an hf:// link to clone</label>' +
+      voiceRefField(p + "PkVoice", p + "PkList", t.pocket_voice || "alba", bs.pocket_voices.map(v => v[0]).concat(bs.voice_files)) +
+      '<div class="form-row3">' +
+        '<div><label>Variation (temperature)</label><input id="' + p + 'PkTemp" value="' + esc(t.pocket_temperature != null ? t.pocket_temperature : 0.7) + '"></div>' +
+        '<div><label>Quality steps (1 fast · 3-5 cleaner)</label><input id="' + p + 'PkSteps" value="' + esc(t.pocket_lsd_steps != null ? t.pocket_lsd_steps : 1) + '"></div>' +
+        '<div><label>Speed</label><input id="' + p + 'PkSpeed" value="' + esc(t.pocket_speed != null ? t.pocket_speed : 1.0) + '"></div>' +
+      '</div>' +
+      '<div class="form-row"><div><label>Stop sensitivity (-4 default · higher ends sooner)</label><input id="' + p + 'PkEos" value="' + esc(t.pocket_eos_threshold != null ? t.pocket_eos_threshold : -4.0) + '"></div>' +
+        '<div><label>Pause between sentences (s)</label><input id="' + p + 'PkPause" value="' + esc(t.pocket_sentence_pause != null ? t.pocket_sentence_pause : 0.25) + '"></div></div>' +
+      '<label class="chk"><input type="checkbox" id="' + p + 'PkNorm"' + (t.tts_normalize === false ? "" : " checked") + '> Level every clip to the same loudness</label>' +
+      '<p class="muted">Tiny 100M model that runs faster than real time on a normal CPU. English only, no emotion tags (they are stripped); ' +
+        '<code>[pause]</code> works. Voice cloning needs only a short clean clip.' +
+        (bs.tools.pocket ? "" : ' <span class="bad">Not installed: run SETUP.bat and pick Pocket TTS, then reload this page.</span>') + '</p>' +
+    '</div>' +
     '<div id="' + p + 'Mini" class="' + hid("minimax") + '">' +
       '<label>MiniMax voice</label><select id="' + p + 'MiniVoice">' + opts(bs.minimax_voices, t.minimax_voice) + '</select>' +
     '</div>' +
@@ -1009,6 +1088,8 @@ function ttsEngineChange(p) {
   document.getElementById(p + "Edge").classList.toggle("hidden", e !== "edge");
   document.getElementById(p + "Mini").classList.toggle("hidden", e !== "minimax");
   document.getElementById(p + "Kokoro").classList.toggle("hidden", e !== "kokoro");
+  document.getElementById(p + "Chatter").classList.toggle("hidden", e !== "chatterbox");
+  document.getElementById(p + "Pocket").classList.toggle("hidden", e !== "pocket");
   document.getElementById(p + "Eleven").classList.toggle("hidden", e !== "elevenlabs");
 }
 
@@ -1027,6 +1108,28 @@ function readTts(p) {
     const ps = parseFloat(g("KokoroPS")), pc = parseFloat(g("KokoroPC"));
     tts.kokoro_sentence_pause = isNaN(ps) ? 0.25 : ps;
     tts.kokoro_clause_pause = isNaN(pc) ? 0.1 : pc;
+  } else if (engine === "chatterbox") {
+    const n = (id, d) => { const v = parseFloat(g(id)); return isNaN(v) ? d : v; };
+    tts.chatterbox_variant = g("CbVariant");
+    tts.chatterbox_language = g("CbLang");
+    tts.chatterbox_voice = g("CbVoice").trim();
+    tts.chatterbox_exaggeration = n("CbExag", 0.5);
+    tts.chatterbox_cfg_weight = n("CbCfg", 0.5);
+    tts.chatterbox_temperature = n("CbTemp", 0.8);
+    tts.chatterbox_speed = n("CbSpeed", 1.0);
+    tts.chatterbox_seed = Math.round(n("CbSeed", 0));
+    tts.chatterbox_sentence_pause = n("CbPause", 0.25);
+    tts.chatterbox_device = g("CbDevice");
+    tts.tts_normalize = document.getElementById(p + "CbNorm").checked;
+  } else if (engine === "pocket") {
+    const n = (id, d) => { const v = parseFloat(g(id)); return isNaN(v) ? d : v; };
+    tts.pocket_voice = g("PkVoice").trim() || "alba";
+    tts.pocket_temperature = n("PkTemp", 0.7);
+    tts.pocket_lsd_steps = Math.max(1, Math.round(n("PkSteps", 1)));
+    tts.pocket_eos_threshold = n("PkEos", -4.0);
+    tts.pocket_speed = n("PkSpeed", 1.0);
+    tts.pocket_sentence_pause = n("PkPause", 0.25);
+    tts.tts_normalize = document.getElementById(p + "PkNorm").checked;
   } else if (engine === "minimax") {
     tts.minimax_voice = g("MiniVoice");
   } else {
@@ -1040,6 +1143,8 @@ function readTts(p) {
 function ttsLabel(engine, t) {
   if (engine === "edge") return "Edge · " + (t.edge_voice || "");
   if (engine === "kokoro") return "Kokoro · " + (t.kokoro_voice || "") + (t.kokoro_voice2 && t.kokoro_mix > 0 ? " + " + t.kokoro_voice2 + " " + t.kokoro_mix + "%" : "") + " · ×" + (t.kokoro_speed || 1);
+  if (engine === "chatterbox") return "Chatterbox " + (t.chatterbox_variant || "turbo") + " · " + (t.chatterbox_voice || "built-in") + (t.chatterbox_speed && t.chatterbox_speed != 1 ? " · ×" + t.chatterbox_speed : "");
+  if (engine === "pocket") return "Pocket TTS · " + (t.pocket_voice || "alba") + (t.pocket_speed && t.pocket_speed != 1 ? " · ×" + t.pocket_speed : "");
   if (engine === "minimax") return "MiniMax · " + (t.minimax_voice || "");
   return "ElevenLabs · " + (t.elevenlabs_voice_id || "") + " · " + (t.elevenlabs_model || "");
 }
@@ -1094,6 +1199,7 @@ state.lab = { engine: "kokoro", tts: {}, text: "", history: [] };
 const LAB_SAMPLES = [
   ["Conversational", "Okay, so here's the thing. Nobody expected him to come back, not after what happened. But he did. And honestly? He looked better than ever."],
   ["Dramatic", "The door slammed shut. Silence. Then, from somewhere deep in the dark... a single, slow footstep."],
+  ["Chatterbox tags", "Okay, I am not going to lie, [chuckle] that was not the plan. [sigh] But somehow it worked. [laugh] Honestly, I still cannot believe it."],
   ["Hype", "Three seconds left, down by one, and he pulls up from way downtown. Are you kidding me? It's good!"],
 ];
 
@@ -1137,7 +1243,7 @@ function labCount() {
   const el = document.getElementById("labCount");
   if (!el) return;
   const n = (state.lab.text || "").length;
-  el.textContent = n + " characters" + (n > 5000 ? " (max 5000)" : "") + " · tags like [excited] only work on ElevenLabs v3; other engines drop them";
+  el.textContent = n + " characters" + (n > 5000 ? " (max 5000)" : "") + " · tags like [excited] work on ElevenLabs v3; [laugh] [sigh] [chuckle]... work on Chatterbox Turbo; other engines drop them";
 }
 
 function labSample(i) {

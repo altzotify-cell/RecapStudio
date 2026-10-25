@@ -1,58 +1,28 @@
-# Recap Studio v2
+# Recap Studio
 
-A local-first pipeline for turning films, shows, games, and topics into narrated
-recap / mini-documentary videos, with a browser UI that drives the whole workflow.
+Local studio for making recap videos: collect footage, write the script with Claude, generate the voice-over, and render.
 
-Each video type is a self-contained project: its own script, `config.json`,
-`project.json`, and `segments.json`.
+## Voice engines (all optional, installed from `SETUP.bat`)
 
-## Video types
+| Engine | Runs | Cloning | Notes |
+|---|---|---|---|
+| Edge-TTS | online, free | no | many voices |
+| Kokoro | offline, any CPU | no | ~350 MB |
+| Pocket TTS | offline, any CPU | yes | English, 8 built-in voices |
+| Chatterbox | offline | yes | Nano 110M / Turbo 350M / Original 500M / Multilingual 500M, `[laugh]` tags |
+| ElevenLabs / MiniMax | online, paid | - | add your key in the app |
 
-`movie_recap` · `show_recap` · `nba_minidoc` · `nba_story` · `real_story` · `ranking`
+## Install (Windows)
 
-Recaps can end as a finished `.mp4` **or** a Premiere XML. Everything else produces
-a rough cut for Premiere.
+1. Double-click `SETUP.bat`. It installs the base tools, then asks which voice engines and models to download.
+2. Copy `keys.env.example` to `keys.env` if you use ElevenLabs or MiniMax (or paste keys in the app's API keys screen).
+3. Double-click `START_UI.bat`.
 
-## Quick start
-
-1. **One-time setup** — double-click `SETUP.bat`
-   (installs `requests`, `edge-tts`, `yt-dlp` and checks for FFmpeg).
-2. **Start the UI** — double-click `START_UI.bat`
-   It opens a browser tab for projects, run steps with live logs, script editing,
-   drag-and-drop footage collection, voice settings and output previews.
-3. **Create a project** — double-click `NEW_PROJECT.bat` (or drag a film onto it),
-   then run `MENU.bat` inside the new project folder.
-
-The legacy terminal flow (`MENU.bat`) still works if you prefer it.
-
-See `START_HERE.txt` for the short version and `_template/README.txt` for the full
-reference of folders, segment fields, Premiere output and the collect step.
-
-## Layout
-
-```
-studio.py            the local web server + UI backend
-web/                 UI front-end (index.html, app.js, style.css, guide.html)
-_template/           the template copied into every new project
-  recap.py           the build engine (voice, footage, Premiere XML, video)
-  config.json        per-project settings (voice engine, fill mode, ...)
-  PASTE_THIS_TO_CLAUDE*.txt   prompts for the Claude step
-Projects/            your actual projects live here
-keys.env             API keys — gitignored, never commit
-```
-
-## API keys
-
-Keys live in `keys.env` (gitignored) or in the UI under **API keys**.
-Edge-TTS needs no key. ElevenLabs and MiniMax keys are optional.
-
-## Requirements
-
-- Python 3.12+ (`SETUP.bat` can install it with winget)
-- FFmpeg / FFprobe (also auto-installable via `SETUP.bat`)
+Run `SETUP.bat` again at any time to add engines. Chatterbox needs Python 3.11 or 3.10; Nano is installed from the GitHub `master` branch because the PyPI release does not include it yet.
 
 ## Notes
 
-- `STATE.md` is rewritten after every step — paste it into a new Claude chat to resume.
-- Downloading clips may breach some sites' terms; heavy use of copyrighted footage
-  with thin commentary can trigger content claims.
+- Chatterbox output carries Resemble AI's Perth watermark.
+- Only clone voices you have the right to use. Reference clips go in `voices/` (git-ignored).
+- Models and engines live in `models/` and `venvs/` (git-ignored); do not move the folder after running setup.
+- Each engine and model has its own license; check them before redistributing audio or models.

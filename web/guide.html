@@ -224,7 +224,21 @@
 
 <!-- ============================ VOICES ============================ -->
 <h2 id="voice">Choosing a voice</h2>
-<div class="tip"><b>Hear a voice before you commit:</b> the sidebar's <b>🎙 Voice Lab</b> lets you type any text, pick Edge, Kokoro, ElevenLabs or MiniMax and play it right in the browser (no project needed). Inside a project, Voice tab → <b>Preview 3 segments</b> and <b>Hear it here</b> do the same with your own script. ElevenLabs and MiniMax use credits; Kokoro downloads a ~350 MB model once and then works offline.</div>
+<div class="tip"><b>Hear a voice before you commit:</b> the sidebar's <b>🎙 Voice Lab</b> lets you type any text, pick Edge, Kokoro, Chatterbox, Pocket TTS, ElevenLabs or MiniMax and play it right in the browser (no project needed). Inside a project, Voice tab → <b>Preview 3 segments</b> and <b>Hear it here</b> do the same with your own script. ElevenLabs and MiniMax use credits; Kokoro downloads a ~350 MB model once and then works offline.</div>
+<h3 id="local-voices">Chatterbox &amp; Pocket TTS (free local voices)</h3>
+<p>Two extra voice engines that run on your own PC with no API key and no per-minute cost. Each installs <b>once</b> into its own private folder, so it can never break the rest of Recap Studio.</p>
+<table>
+<tr><th></th><th>Chatterbox</th><th>Pocket TTS</th></tr>
+<tr><td><b>Install</b></td><td>double-click <code>SETUP.bat</code>, pick Chatterbox, then choose Nano 110M (lightest), Turbo 350M, Original 500M or Multilingual</td><td>double-click <code>SETUP.bat</code> and pick Pocket TTS (~1 GB)</td></tr>
+<tr><td><b>Needs</b></td><td>NVIDIA GPU recommended; CPU works but is slow</td><td>just a normal CPU, faster than real time</td></tr>
+<tr><td><b>Languages</b></td><td>English (Nano / Turbo / Original) or 23 languages (Multilingual; SETUP asks if you need other languages)</td><td>English</td></tr>
+<tr><td><b>Voice cloning</b></td><td>yes, from a 5-15 s clip</td><td>yes, from a short clip</td></tr>
+<tr><td><b>Emotion</b></td><td>Nano / Turbo: <code>[laugh] [chuckle] [sigh] [gasp] [cough] [groan] [yawn] [sniff] [clearing_throat]</code>. Original / Multilingual: <b>Exaggeration</b> and <b>Pacing</b> sliders</td><td>Variation (temperature) and quality steps</td></tr>
+<tr><td><b>Speed / pauses</b></td><td colspan="2">Per-segment <code>speed</code> works (pitch is kept). <code>[pause]</code> and <code>[long pause]</code> in the script become real silence. Long narration is split into sentence groups automatically.</td></tr>
+</table>
+<p><b>Cloning a voice:</b> Voice tab (or Voice Lab) → pick the engine → <b>⬆ Upload clip</b>, or drop the file into the <code>voices</code> folder and type its name. Use one speaker, no music, no echo, 5-15 seconds. Only clone voices you have the right to use. Chatterbox output carries an inaudible Perth watermark from Resemble AI.</p>
+<p><b>Tags:</b> to use Turbo's <code>[laugh]</code> etc., set the project's <i>voice style</i> to <b>light</b> or <b>heavy</b> (the PASTE_THIS_TO_CLAUDE prompt already explains the tags to Claude). In <b>plain</b> mode every tag is stripped so nothing is read aloud.</p>
+<p>After installing, reload this page so the sidebar shows the engine as installed. The first generation downloads the model; the Voice Lab then loads it again for every preview (10-30 s for Chatterbox), while a full <b>Generate</b> loads it once for the whole video.</p>
 
 <table>
   <tr><th>Engine</th><th>Cost</th><th>Notes</th></tr>
