@@ -69,6 +69,8 @@ FIELDS
 - caption  short on-screen text (a chapter label, a date, a name tag). Optional.
 - chapter  chapter title - put it on the FIRST segment of each chapter. Optional.
 - subtitle real spelling for the captions when you respelled a name for the voice. Optional.
+- speed       Kokoro voice only: speaking-speed multiplier for THIS segment (1.0 = normal, 0.85 = slower for dramatic
+               or emotional beats, 1.15 = faster for action / jokes). Range 0.6-1.4. Leave out when normal.
 
 GENERAL RULES
 - Page numbers must exist in the PDF. If unsure where a panel is, use focus ["page"] rather than guessing a box.
@@ -83,6 +85,9 @@ VOICE TEXT ("tts_mode" in project.json)
 - light : plain + a few ElevenLabs v3 tags on key beats: [excited] [whispers] [sad] [softly] [dramatic] [warmly] [pause]
           about 1 per 5-8 segments.
 - heavy : tags on most segments plus [pause]; only use the tags on my voice card.
+- kokoro : (free local voice, no tags) like plain, but write it the way people TALK: contractions, short sentences and
+          fragments, commas where a person would breathe, "..." for a beat, "?" and "!" for tone. Respell hard names
+          in "narration" (real spelling in "subtitle"). Use "speed" to slow dramatic lines or speed up action.
 - Respell names phonetically in "narration" only if the voice mispronounces them, and put the real spelling in "subtitle".
 
 TIKTOK / SHORTS (only if I ask): put vertical parts under "tiktok": {"part1": [ ...same segment format... ]}.

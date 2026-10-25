@@ -107,6 +107,10 @@ DEFAULT_CONFIG = {
         "minimax_voice": "male-qn-qingse",
         "kokoro_voice": "am_michael",
         "kokoro_speed": 1.0,
+        "kokoro_voice2": "",          # optional: blend a second voice in
+        "kokoro_mix": 0,              # percent of voice 2 (0 = off)
+        "kokoro_sentence_pause": 0.25,   # seconds of silence after a sentence (lower = more conversational)
+        "kokoro_clause_pause": 0.1,      # seconds after a comma / clause
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
@@ -1277,13 +1281,20 @@ MINIMAX_VOICES = [
     ("Wise_Woman", "Wise Woman (mature narrative)"),
     ("audiobook_male_1", "Audiobook Male (deep storyteller)"),
 ]
-KOKORO_VOICES = [
-    ("af_heart", "Heart (US female, warm)"), ("af_bella", "Bella (US female, expressive)"),
-    ("af_nicole", "Nicole (US female, soft)"), ("af_sarah", "Sarah (US female, clear)"),
-    ("am_michael", "Michael (US male, narrator)"), ("am_fenrir", "Fenrir (US male, deep)"),
-    ("am_adam", "Adam (US male, plain)"), ("am_puck", "Puck (US male, lively)"),
-    ("bm_george", "George (UK male, narrator)"), ("bm_fable", "Fable (UK male, storyteller)"),
-    ("bm_lewis", "Lewis (UK male, calm)"), ("bf_emma", "Emma (UK female)"),
+KOKORO_VOICES = [   # every English voice in the Kokoro v1.0 model (same list as the hexgrad demo space)
+    ("af_heart", "Heart - US female, warm (default of the demo)"), ("af_bella", "Bella - US female, expressive"),
+    ("af_nicole", "Nicole - US female, soft"), ("af_sarah", "Sarah - US female, clear"),
+    ("af_aoede", "Aoede - US female"), ("af_kore", "Kore - US female"), ("af_alloy", "Alloy - US female"),
+    ("af_nova", "Nova - US female"), ("af_sky", "Sky - US female"), ("af_jessica", "Jessica - US female"),
+    ("af_river", "River - US female"),
+    ("am_michael", "Michael - US male, narrator"), ("am_fenrir", "Fenrir - US male, deep"),
+    ("am_puck", "Puck - US male, lively"), ("am_adam", "Adam - US male"), ("am_echo", "Echo - US male"),
+    ("am_eric", "Eric - US male"), ("am_liam", "Liam - US male"), ("am_onyx", "Onyx - US male"),
+    ("am_santa", "Santa - US male"),
+    ("bf_emma", "Emma - UK female"), ("bf_isabella", "Isabella - UK female"), ("bf_alice", "Alice - UK female"),
+    ("bf_lily", "Lily - UK female"),
+    ("bm_george", "George - UK male, narrator"), ("bm_fable", "Fable - UK male, storyteller"),
+    ("bm_lewis", "Lewis - UK male, calm"), ("bm_daniel", "Daniel - UK male"),
 ]
 KOKORO_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 KOKORO_FILES = ("kokoro-v1.0.onnx", "voices-v1.0.bin")
@@ -1395,6 +1406,17 @@ def kokoro_download(folder):
     return folder
 
 
+SEG_SPEED = 1.0     # set by step_tts before each clip: this segment's "speed" multiplier
+
+
+def seg_speed(seg):
+    try:
+        v = float(seg.get("speed") or 1.0)
+    except (TypeError, ValueError):
+        v = 1.0
+    return max(0.6, min(1.4, v))
+
+
 def make_kokoro(cfg, pick):
     try:
         from kokoro_onnx import Kokoro
@@ -1407,18 +1429,28 @@ def make_kokoro(cfg, pick):
         save_config(cfg)
     voice = t.get("kokoro_voice") or "am_michael"
     speed = float(t.get("kokoro_speed", 1.0) or 1.0)
+    voice2 = t.get("kokoro_voice2") or ""
+    mix = max(0.0, min(100.0, float(t.get("kokoro_mix", 0) or 0))) / 100.0
     folder = kokoro_model_dir()
     try:
         kokoro_download(folder)
     except Exception as e:
         die(f"Could not download the Kokoro model ({e}).\nDownload these two files by hand into {folder}:\n"
             + "\n".join(f"  {KOKORO_BASE}{f}" for f in KOKORO_FILES))
-    print(f"Engine: Kokoro (local) | Voice: {voice} | Speed: {speed}")
     k = Kokoro(os.path.join(folder, KOKORO_FILES[0]), os.path.join(folder, KOKORO_FILES[1]))
+    style = voice
+    if voice2 and voice2 != voice and mix > 0:
+        style = k.get_voice_style(voice) * (1 - mix) + k.get_voice_style(voice2) * mix
+        print(f"Engine: Kokoro (local) | Voice: {voice} {round((1 - mix) * 100)}% + {voice2} {round(mix * 100)}% | Speed: {speed}")
+    else:
+        print(f"Engine: Kokoro (local) | Voice: {voice} | Speed: {speed}")
     lang = "en-gb" if voice.startswith("b") else "en-us"
+    pause_s = float(t.get("kokoro_sentence_pause", 0.25))
+    pause_c = float(t.get("kokoro_clause_pause", 0.1))
 
     def runner(text, out):
-        samples, sr = k.create(text, voice=voice, speed=speed, lang=lang)
+        samples, sr = k.create(text, voice=style, speed=speed * SEG_SPEED, lang=lang,
+                               sentence_pause=pause_s, clause_pause=pause_c)
         wav = out + ".wav"
         sf.write(wav, samples, sr)
         r = run(["ffmpeg", "-y", "-loglevel", "error", "-i", wav, "-ac", "1", "-b:a", "128k", "-f", "mp3", out])
@@ -1579,7 +1611,8 @@ def tts_signature(engine, cfg):
     if engine == "minimax":
         return f"mm|{t.get('minimax_voice')}"
     if engine == "kokoro":
-        return f"kk|{t.get('kokoro_voice')}|{t.get('kokoro_speed')}"
+        return (f"kk|{t.get('kokoro_voice')}|{t.get('kokoro_speed')}|{t.get('kokoro_voice2')}|{t.get('kokoro_mix')}"
+                f"|{t.get('kokoro_sentence_pause')}|{t.get('kokoro_clause_pause')}")
     return f"edge|{t.get('edge_voice')}|{t.get('edge_rate')}"
 
 
@@ -1674,7 +1707,7 @@ def step_tts(args):
         sid = s["id"]
         text = voice_text(s, engine, cfg)
         out = os.path.join(out_dir, f"{sid}.mp3")
-        th = h8(text)
+        th = h8(text + (f"|spd{seg_speed(s)}" if engine == "kokoro" and seg_speed(s) != 1.0 else ""))
         if preview or (only and not preview):
             plan.append((s, text, out, th, "preview" if preview else "re-voice (asked)"))
             continue
@@ -1712,6 +1745,8 @@ def step_tts(args):
         progress(i - 1, len(plan), f"Voicing {sid}")
         print(f"[{i}/{len(plan)}] {sid} ({len(text)} chars, {why})...", end="", flush=True)
         before = POOLS[-1].idx if POOLS else 0
+        global SEG_SPEED
+        SEG_SPEED = seg_speed(s) if engine == "kokoro" else 1.0
         ok, retried = gen_with_retry(generate, text, out)
         after = POOLS[-1].idx if POOLS else 0
         if ok:

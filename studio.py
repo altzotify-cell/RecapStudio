@@ -59,13 +59,20 @@ EDGE_VOICES = [
     ("en-US-EricNeural", "Eric (deep / serious)"),
     ("en-US-JennyNeural", "Jenny (clear female narrator)"),
 ]
-KOKORO_VOICES = [
-    ("af_heart", "Heart (US female, warm)"), ("af_bella", "Bella (US female, expressive)"),
-    ("af_nicole", "Nicole (US female, soft)"), ("af_sarah", "Sarah (US female, clear)"),
-    ("am_michael", "Michael (US male, narrator)"), ("am_fenrir", "Fenrir (US male, deep)"),
-    ("am_adam", "Adam (US male, plain)"), ("am_puck", "Puck (US male, lively)"),
-    ("bm_george", "George (UK male, narrator)"), ("bm_fable", "Fable (UK male, storyteller)"),
-    ("bm_lewis", "Lewis (UK male, calm)"), ("bf_emma", "Emma (UK female)"),
+KOKORO_VOICES = [   # every English voice in the Kokoro v1.0 model (same list as the hexgrad demo space)
+    ("af_heart", "Heart - US female, warm (default of the demo)"), ("af_bella", "Bella - US female, expressive"),
+    ("af_nicole", "Nicole - US female, soft"), ("af_sarah", "Sarah - US female, clear"),
+    ("af_aoede", "Aoede - US female"), ("af_kore", "Kore - US female"), ("af_alloy", "Alloy - US female"),
+    ("af_nova", "Nova - US female"), ("af_sky", "Sky - US female"), ("af_jessica", "Jessica - US female"),
+    ("af_river", "River - US female"),
+    ("am_michael", "Michael - US male, narrator"), ("am_fenrir", "Fenrir - US male, deep"),
+    ("am_puck", "Puck - US male, lively"), ("am_adam", "Adam - US male"), ("am_echo", "Echo - US male"),
+    ("am_eric", "Eric - US male"), ("am_liam", "Liam - US male"), ("am_onyx", "Onyx - US male"),
+    ("am_santa", "Santa - US male"),
+    ("bf_emma", "Emma - UK female"), ("bf_isabella", "Isabella - UK female"), ("bf_alice", "Alice - UK female"),
+    ("bf_lily", "Lily - UK female"),
+    ("bm_george", "George - UK male, narrator"), ("bm_fable", "Fable - UK male, storyteller"),
+    ("bm_lewis", "Lewis - UK male, calm"), ("bm_daniel", "Daniel - UK male"),
 ]
 MINIMAX_VOICES = [
     ("male-qn-qingse", "Male Qingse (calm & clear narrator)"),
@@ -86,7 +93,8 @@ DEFAULT_CONFIG = {
         "engine": "", "edge_voice": "en-US-ChristopherNeural", "edge_rate": "+0%",
         "elevenlabs_voice_id": "", "elevenlabs_model": "eleven_v3",
         "elevenlabs_stability": 0.5, "minimax_voice": "male-qn-qingse",
-        "kokoro_voice": "am_michael", "kokoro_speed": 1.0,
+        "kokoro_voice": "am_michael", "kokoro_speed": 1.0, "kokoro_voice2": "", "kokoro_mix": 0,
+        "kokoro_sentence_pause": 0.25, "kokoro_clause_pause": 0.1,
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},

@@ -40,6 +40,8 @@ OPTIONAL FIELDS (leave out what you don't need - missing = old behaviour)
                  "fallback": "generic b-roll idea" }
 - need_visual  true when you can't tell what is on screen; I will send contact sheets.
 - subtitle     real spelling for captions when you respelled a name for the voice.
+- speed       Kokoro voice only: speaking-speed multiplier for THIS segment (1.0 = normal, 0.85 = slower for dramatic
+               or emotional beats, 1.15 = faster for action / jokes). Range 0.6-1.4. Leave out when normal.
 
 GENERAL RULES
 - Output valid JSON only (no comments, no trailing commas). ids unique across the whole file. src_end after src_start.
@@ -55,6 +57,9 @@ VOICE TEXT ("tts_mode" in project.json)
 - light : plain + a few ElevenLabs v3 tags on key beats: [excited] [whispers] [sad] [softly] [dramatic] [warmly] [pause]
           about 1 per 5-8 segments.
 - heavy : tags on most segments plus [pause]; only use the tags on my voice card.
+- kokoro : (free local voice, no tags) like plain, but write it the way people TALK: contractions, short sentences and
+          fragments, commas where a person would breathe, "..." for a beat, "?" and "!" for tone. Respell hard names
+          in "narration" (real spelling in "subtitle"). Use "speed" to slow dramatic lines or speed up action.
 - Respell names phonetically in "narration" only if the voice mispronounces them (e.g. Stoick -> "Stoyk"), and
   put the real spelling in "subtitle".
 - If I ask for two files, give segments_edge.json (plain) and segments_elevenlabs.json (tagged) with identical

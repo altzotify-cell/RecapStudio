@@ -921,6 +921,12 @@ function renderVoice(c) {
         '<div id="vKokoro" class="' + (engine === "kokoro" ? "" : "hidden") + '">' +
           '<label>Kokoro voice</label><select id="vKokoroVoice">' + kkOpts + '</select>' +
           '<label>Speed (1.0 = normal, 1.15 = faster)</label><input id="vKokoroSpeed" value="' + esc(t.kokoro_speed != null ? t.kokoro_speed : 1.0) + '">' +
+          '<label>Blend in a second voice (optional)</label><select id="vKokoroVoice2"><option value="">none</option>' +
+            state.bootstrap.kokoro_voices.map(v => '<option value="' + v[0] + '"' + (v[0] === (t.kokoro_voice2 || "") ? " selected" : "") + '>' + esc(v[1]) + '</option>').join("") + '</select>' +
+          '<label>How much of voice 2, in % (0 = off, 30-50 = a new in-between voice)</label><input id="vKokoroMix" value="' + esc(t.kokoro_mix != null ? t.kokoro_mix : 0) + '">' +
+          '<label>Pause after a sentence / after a comma, in seconds (lower = more conversational)</label>' +
+          '<div class="form-row"><div><input id="vKokoroPS" value="' + esc(t.kokoro_sentence_pause != null ? t.kokoro_sentence_pause : 0.25) + '"></div>' +
+          '<div><input id="vKokoroPC" value="' + esc(t.kokoro_clause_pause != null ? t.kokoro_clause_pause : 0.1) + '"></div></div>' +
           '<p class="muted">Runs on your PC. The first run downloads the ~350 MB model once. No audio tags: they are stripped.' +
             (state.bootstrap.tools.kokoro ? "" : ' <span class="bad">kokoro-onnx missing (run SETUP.bat)</span>') + '</p>' +
         '</div>' +
@@ -976,6 +982,11 @@ async function saveVoiceConfig() {
   } else if (engine === "kokoro") {
     tts.kokoro_voice = document.getElementById("vKokoroVoice").value;
     tts.kokoro_speed = parseFloat(document.getElementById("vKokoroSpeed").value) || 1.0;
+    tts.kokoro_voice2 = document.getElementById("vKokoroVoice2").value;
+    tts.kokoro_mix = parseFloat(document.getElementById("vKokoroMix").value) || 0;
+    const ps = parseFloat(document.getElementById("vKokoroPS").value), pc = parseFloat(document.getElementById("vKokoroPC").value);
+    tts.kokoro_sentence_pause = isNaN(ps) ? 0.25 : ps;
+    tts.kokoro_clause_pause = isNaN(pc) ? 0.1 : pc;
   } else if (engine === "minimax") {
     tts.minimax_voice = document.getElementById("vMiniVoice").value;
   } else {
