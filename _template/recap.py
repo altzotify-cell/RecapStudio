@@ -1448,9 +1448,22 @@ def make_kokoro(cfg, pick):
     pause_s = float(t.get("kokoro_sentence_pause", 0.25))
     pause_c = float(t.get("kokoro_clause_pause", 0.1))
 
+    import inspect
+    try:
+        accepted = set(inspect.signature(k.create).parameters)
+    except (TypeError, ValueError):
+        accepted = set()
+    extra = {}
+    if "sentence_pause" in accepted:
+        extra["sentence_pause"] = pause_s
+    if "clause_pause" in accepted:
+        extra["clause_pause"] = pause_c
+    if not extra:
+        print("[i] Your kokoro-onnx is an older version: the pause settings are ignored. "
+              "Run SETUP.bat (or: pip install --upgrade kokoro-onnx) to get them.")
+
     def runner(text, out):
-        samples, sr = k.create(text, voice=style, speed=speed * SEG_SPEED, lang=lang,
-                               sentence_pause=pause_s, clause_pause=pause_c)
+        samples, sr = k.create(text, voice=style, speed=speed * SEG_SPEED, lang=lang, **extra)
         wav = out + ".wav"
         sf.write(wav, samples, sr)
         r = run(["ffmpeg", "-y", "-loglevel", "error", "-i", wav, "-ac", "1", "-b:a", "128k", "-f", "mp3", out])
@@ -4024,12 +4037,54 @@ def comic_status():
             f"{len(pdfs)} PDF part(s) for Claude in {REVIEW_DIR}/")
 
 
+def step_say(args):
+    """Voice Lab: speak ONE text with the chosen engine (no project needed). Used by the browser."""
+    global SEG_SPEED
+    cfg = CFG
+    t = cfg["tts"]
+    if args.tts_file:
+        with open(args.tts_file, "r", encoding="utf-8") as f:
+            t.update(json.load(f))
+    engine = args.engine or t.get("engine", "edge")
+    t["engine"] = engine
+    if not args.text_file or not args.out:
+        die("say needs --text-file and --out")
+    with open(args.text_file, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+    if not text:
+        die("There is no text to speak.")
+    if engine == "elevenlabs" and not t.get("elevenlabs_voice_id"):
+        t["elevenlabs_voice_id"] = "21m00Tcm4TlvDq8ikWAM"      # Rachel, so the Voice Lab never waits on a question
+    v3 = engine == "elevenlabs" and str(t.get("elevenlabs_model", "eleven_v3")).lower() == "eleven_v3"
+    text = " ".join(text.replace("*", "").split()) if v3 else strip_tags(text)
+    if not text:
+        die("Only tags were found - nothing to speak.")
+    try:
+        SEG_SPEED = max(0.6, min(1.4, float(t.get("seg_speed", 1) or 1))) if engine == "kokoro" else 1.0
+    except (TypeError, ValueError):
+        SEG_SPEED = 1.0
+    maker = {"edge": make_edge, "kokoro": make_kokoro, "elevenlabs": make_elevenlabs,
+             "minimax": make_minimax}.get(engine, make_edge)
+    generate = maker(cfg, False)
+    tmp = args.out + ".part"
+    try:
+        generate(text, tmp)
+    except SystemExit:
+        raise
+    except Exception as e:
+        die(f"{engine} could not make the audio: {e}")
+    if not os.path.isfile(tmp) or os.path.getsize(tmp) < 200:
+        die(f"{engine} returned no audio.")
+    os.replace(tmp, args.out)
+    print(f"[+] {args.out}")
+
+
 STEPS = {"init": step_init, "module": step_module, "subs": step_subs, "index": step_index,
-         "sheets": step_sheets, "comic": step_comic, "collect": step_collect, "tts": step_tts, "review": step_review,
+         "sheets": step_sheets, "say": step_say, "comic": step_comic, "collect": step_collect, "tts": step_tts, "review": step_review,
          "premiere": step_premiere, "videopad": step_videopad, "video": step_video, "srt": step_srt, "tiktok": step_tiktok,
          "check": step_check, "demo": step_demo,
          "missing": step_missing, "collect_one": step_collect_one}
-NO_STATE = ("init", "module", "demo", "missing", "collect_one")
+NO_STATE = ("init", "module", "demo", "missing", "collect_one", "say")
 
 
 def main():
@@ -4051,6 +4106,9 @@ def main():
     ap.add_argument("--range", help="collect_one: optional 'start-end' time range")
     ap.add_argument("--file", help="collect_one: local media file to copy in  |  comic: the .cbz/.cbr/.pdf to import")
     ap.add_argument("--skip", action="store_true", help="collect_one: mark the shot as skipped")
+    ap.add_argument("--text-file", help="say: UTF-8 text file to speak")
+    ap.add_argument("--tts-file", help="say: JSON file with tts setting overrides")
+    ap.add_argument("--out", help="say: output mp3")
     args = ap.parse_args()
     try:
         STEPS[args.step](args)

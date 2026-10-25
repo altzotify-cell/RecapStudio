@@ -99,6 +99,7 @@ function bindStatic() {
   $("newProjectBtn").addEventListener("click", newProjectModal);
   $("openFolderBtn").addEventListener("click", () => apiPost("/api/projects/" + enc(state.current) + "/open"));
   $("keysBtn").addEventListener("click", keysModal);
+  $("labBtn").addEventListener("click", openLab);
   $("consoleClose").addEventListener("click", closeConsole);
   $("consoleStop").addEventListener("click", () => stopJob());
   $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });
@@ -160,6 +161,7 @@ async function loadDetail() {
   const seg = await apiGet("/api/projects/" + enc(state.current) + "/segments");
   state.segments = (seg && !seg.error) ? seg : { youtube: [], tiktok: {} };
   $("emptyState").classList.add("hidden");
+  $("labView").classList.add("hidden");
   $("projectView").classList.remove("hidden");
   renderHeader();
 }
@@ -914,34 +916,7 @@ function renderVoice(c) {
       '<div class="card">' +
         '<h3 style="margin-top:0">Voice settings</h3>' +
         '<label>Engine</label><select id="vEngine" onchange="voiceEngineChange()">' + engOpts + '</select>' +
-        '<div id="vEdge" class="' + (engine === "edge" ? "" : "hidden") + '">' +
-          '<label>Edge voice</label><select id="vEdgeVoice">' + edgeOpts + '</select>' +
-          '<label>Rate</label><input id="vEdgeRate" value="' + esc(t.edge_rate || "+0%") + '">' +
-        '</div>' +
-        '<div id="vKokoro" class="' + (engine === "kokoro" ? "" : "hidden") + '">' +
-          '<label>Kokoro voice</label><select id="vKokoroVoice">' + kkOpts + '</select>' +
-          '<label>Speed (1.0 = normal, 1.15 = faster)</label><input id="vKokoroSpeed" value="' + esc(t.kokoro_speed != null ? t.kokoro_speed : 1.0) + '">' +
-          '<label>Blend in a second voice (optional)</label><select id="vKokoroVoice2"><option value="">none</option>' +
-            state.bootstrap.kokoro_voices.map(v => '<option value="' + v[0] + '"' + (v[0] === (t.kokoro_voice2 || "") ? " selected" : "") + '>' + esc(v[1]) + '</option>').join("") + '</select>' +
-          '<label>How much of voice 2, in % (0 = off, 30-50 = a new in-between voice)</label><input id="vKokoroMix" value="' + esc(t.kokoro_mix != null ? t.kokoro_mix : 0) + '">' +
-          '<label>Pause after a sentence / after a comma, in seconds (lower = more conversational)</label>' +
-          '<div class="form-row"><div><input id="vKokoroPS" value="' + esc(t.kokoro_sentence_pause != null ? t.kokoro_sentence_pause : 0.25) + '"></div>' +
-          '<div><input id="vKokoroPC" value="' + esc(t.kokoro_clause_pause != null ? t.kokoro_clause_pause : 0.1) + '"></div></div>' +
-          '<p class="muted">Runs on your PC. The first run downloads the ~350 MB model once. No audio tags: they are stripped.' +
-            (state.bootstrap.tools.kokoro ? "" : ' <span class="bad">kokoro-onnx missing (run SETUP.bat)</span>') + '</p>' +
-        '</div>' +
-        '<div id="vMini" class="' + (engine === "minimax" ? "" : "hidden") + '">' +
-          '<label>MiniMax voice</label><select id="vMiniVoice">' + mmOpts + '</select>' +
-        '</div>' +
-        '<div id="vEleven" class="' + (engine === "elevenlabs" ? "" : "hidden") + '">' +
-          '<label>ElevenLabs voice ID</label>' +
-          '<div style="display:flex;gap:8px">' +
-            '<input id="vElVoice" value="' + esc(t.elevenlabs_voice_id || "") + '" placeholder="voice id">' +
-            '<button class="btn small" onclick="fetchElevenLabsVoices()">Fetch</button>' +
-          '</div>' +
-          '<label>Model</label><input id="vElModel" value="' + esc(t.elevenlabs_model || "eleven_v3") + '">' +
-          '<label>Stability</label><input id="vElStab" value="' + esc(t.elevenlabs_stability != null ? t.elevenlabs_stability : 0.5) + '">' +
-        '</div>' +
+        ttsControlsHTML("v", t, engine) +
         '<button class="btn primary" style="margin-top:14px" onclick="saveVoiceConfig()">Save voice settings</button>' +
       '</div>' +
       '<div class="card">' +
@@ -949,7 +924,7 @@ function renderVoice(c) {
         '<p class="muted">Preview voices 3 segments before spending credits; generate only re-voices new/edited text.</p>' +
         '<div class="row" style="display:flex;gap:8px;flex-wrap:wrap">' +
           '<button class="btn" onclick="runVoice(false)">🎙 Generate (changed only)</button>' +
-          '<button class="btn" onclick="runVoice(true)">Preview 3 segments</button>' +
+          '<button class="btn" onclick="hearSegments()">▶ Preview 3 segments (plays here)</button>' +
           '<button class="btn danger" onclick="runVoice(false, true)">Regenerate all</button>' +
         '</div>' +
         '<div class="muted" style="margin-top:12px">' +
@@ -962,53 +937,237 @@ function renderVoice(c) {
           ' <button class="btn small" onclick="keysModal()">🔑 Manage API keys</button>' +
         '</div>' +
       '</div>' +
+    '</div>' +
+    '<div class="card" style="margin-top:16px"><h3 style="margin-top:0">🎧 Hear it here</h3>' +
+      '<p class="muted">Plays in the browser with the settings on the left, even before you save them. ElevenLabs / MiniMax use credits.</p>' +
+      '<textarea id="vHearText" rows="3" placeholder="Type something to hear…">' + esc(((((state.segments && state.segments.youtube) || [])[0] || {}).narration || "").slice(0, 400)) + '</textarea>' +
+      '<div style="margin-top:8px"><button class="btn primary" onclick="hearHere()">▶ Play this text</button> <span id="vHearStatus" class="muted"></span></div>' +
+      '<div id="vHearList"></div>' +
     '</div>';
 }
 
-function voiceEngineChange() {
-  const e = document.getElementById("vEngine").value;
-  document.getElementById("vEdge").classList.toggle("hidden", e !== "edge");
-  document.getElementById("vMini").classList.toggle("hidden", e !== "minimax");
-  document.getElementById("vKokoro").classList.toggle("hidden", e !== "kokoro");
-  document.getElementById("vEleven").classList.toggle("hidden", e !== "elevenlabs");
-}
+function voiceEngineChange() { ttsEngineChange("v"); }
 
 async function saveVoiceConfig() {
-  const engine = document.getElementById("vEngine").value;
-  const tts = { engine };
-  if (engine === "edge") {
-    tts.edge_voice = document.getElementById("vEdgeVoice").value;
-    tts.edge_rate = document.getElementById("vEdgeRate").value;
-  } else if (engine === "kokoro") {
-    tts.kokoro_voice = document.getElementById("vKokoroVoice").value;
-    tts.kokoro_speed = parseFloat(document.getElementById("vKokoroSpeed").value) || 1.0;
-    tts.kokoro_voice2 = document.getElementById("vKokoroVoice2").value;
-    tts.kokoro_mix = parseFloat(document.getElementById("vKokoroMix").value) || 0;
-    const ps = parseFloat(document.getElementById("vKokoroPS").value), pc = parseFloat(document.getElementById("vKokoroPC").value);
-    tts.kokoro_sentence_pause = isNaN(ps) ? 0.25 : ps;
-    tts.kokoro_clause_pause = isNaN(pc) ? 0.1 : pc;
-  } else if (engine === "minimax") {
-    tts.minimax_voice = document.getElementById("vMiniVoice").value;
-  } else {
-    tts.elevenlabs_voice_id = document.getElementById("vElVoice").value.trim();
-    tts.elevenlabs_model = document.getElementById("vElModel").value.trim();
-    tts.elevenlabs_stability = parseFloat(document.getElementById("vElStab").value || "0.5");
-  }
+  const { tts } = readTts("v");
   const res = await apiPost("/api/projects/" + enc(state.current) + "/config", { config: { tts } });
   if (res.error) { toast(res.error); return; }
   toast("Voice settings saved ✓");
   await loadDetail();
 }
 
-async function fetchElevenLabsVoices() {
+async function fetchElevenLabsVoices(p) {
+  p = p || "v";
   const res = await apiPost("/api/elevenlabs/voices", {});
   if (res.error) { toast(res.error); return; }
   const opts = res.voices.map(v => '<option value="' + esc(v.voice_id) + '">' + esc(v.name) + '</option>').join("");
-  const el = document.getElementById("vElVoice");
+  const el = document.getElementById(p + "ElVoice");
   const cur = el.value;
-  el.outerHTML = '<select id="vElVoice">' + opts + '</select>';
-  if (cur) document.getElementById("vElVoice").value = cur;
+  el.outerHTML = '<select id="' + p + 'ElVoice">' + opts + '</select>';
+  if (cur) document.getElementById(p + "ElVoice").value = cur;
   toast("Loaded " + res.voices.length + " voices");
+}
+
+/* ---- shared voice controls (project Voice tab + Voice Lab) ---- */
+function ttsControlsHTML(p, t, engine) {
+  const bs = state.bootstrap;
+  const opts = (list, cur) => list.map(v => '<option value="' + v[0] + '"' + (v[0] === cur ? " selected" : "") + '>' + esc(v[1]) + '</option>').join("");
+  const hid = (e) => (engine === e ? "" : "hidden");
+  return (
+    '<div id="' + p + 'Edge" class="' + hid("edge") + '">' +
+      '<label>Edge voice</label><select id="' + p + 'EdgeVoice">' + opts(bs.edge_voices, t.edge_voice) + '</select>' +
+      '<label>Rate</label><input id="' + p + 'EdgeRate" value="' + esc(t.edge_rate || "+0%") + '">' +
+    '</div>' +
+    '<div id="' + p + 'Kokoro" class="' + hid("kokoro") + '">' +
+      '<label>Kokoro voice</label><select id="' + p + 'KokoroVoice">' + opts(bs.kokoro_voices, t.kokoro_voice || "am_michael") + '</select>' +
+      '<label>Speed (1.0 = normal, 1.15 = faster)</label><input id="' + p + 'KokoroSpeed" value="' + esc(t.kokoro_speed != null ? t.kokoro_speed : 1.0) + '">' +
+      '<label>Blend in a second voice (optional)</label><select id="' + p + 'KokoroVoice2"><option value="">none</option>' + opts(bs.kokoro_voices, t.kokoro_voice2 || "") + '</select>' +
+      '<label>How much of voice 2, in % (0 = off, 30-50 = a new in-between voice)</label><input id="' + p + 'KokoroMix" value="' + esc(t.kokoro_mix != null ? t.kokoro_mix : 0) + '">' +
+      '<label>Pause after a sentence / after a comma, in seconds (lower = more conversational)</label>' +
+      '<div class="form-row"><div><input id="' + p + 'KokoroPS" value="' + esc(t.kokoro_sentence_pause != null ? t.kokoro_sentence_pause : 0.25) + '"></div>' +
+      '<div><input id="' + p + 'KokoroPC" value="' + esc(t.kokoro_clause_pause != null ? t.kokoro_clause_pause : 0.1) + '"></div></div>' +
+      '<p class="muted">Runs on your PC. The first run downloads the ~350 MB model once. No audio tags: they are stripped.' +
+        (bs.tools.kokoro ? "" : ' <span class="bad">kokoro-onnx missing (run SETUP.bat)</span>') + '</p>' +
+    '</div>' +
+    '<div id="' + p + 'Mini" class="' + hid("minimax") + '">' +
+      '<label>MiniMax voice</label><select id="' + p + 'MiniVoice">' + opts(bs.minimax_voices, t.minimax_voice) + '</select>' +
+    '</div>' +
+    '<div id="' + p + 'Eleven" class="' + hid("elevenlabs") + '">' +
+      '<label>ElevenLabs voice ID</label>' +
+      '<div style="display:flex;gap:8px">' +
+        '<input id="' + p + 'ElVoice" value="' + esc(t.elevenlabs_voice_id || "") + '" placeholder="voice id">' +
+        '<button class="btn small" onclick="fetchElevenLabsVoices(\'' + p + '\')">Fetch</button>' +
+      '</div>' +
+      '<label>Model (eleven_v3 understands [tags])</label><input id="' + p + 'ElModel" value="' + esc(t.elevenlabs_model || "eleven_v3") + '">' +
+      '<label>Stability</label><input id="' + p + 'ElStab" value="' + esc(t.elevenlabs_stability != null ? t.elevenlabs_stability : 0.5) + '">' +
+    '</div>'
+  );
+}
+
+function ttsEngineChange(p) {
+  const e = document.getElementById(p + "Engine").value;
+  document.getElementById(p + "Edge").classList.toggle("hidden", e !== "edge");
+  document.getElementById(p + "Mini").classList.toggle("hidden", e !== "minimax");
+  document.getElementById(p + "Kokoro").classList.toggle("hidden", e !== "kokoro");
+  document.getElementById(p + "Eleven").classList.toggle("hidden", e !== "elevenlabs");
+}
+
+function readTts(p) {
+  const g = (id) => document.getElementById(p + id).value;
+  const engine = g("Engine");
+  const tts = { engine };
+  if (engine === "edge") {
+    tts.edge_voice = g("EdgeVoice");
+    tts.edge_rate = g("EdgeRate");
+  } else if (engine === "kokoro") {
+    tts.kokoro_voice = g("KokoroVoice");
+    tts.kokoro_speed = parseFloat(g("KokoroSpeed")) || 1.0;
+    tts.kokoro_voice2 = g("KokoroVoice2");
+    tts.kokoro_mix = parseFloat(g("KokoroMix")) || 0;
+    const ps = parseFloat(g("KokoroPS")), pc = parseFloat(g("KokoroPC"));
+    tts.kokoro_sentence_pause = isNaN(ps) ? 0.25 : ps;
+    tts.kokoro_clause_pause = isNaN(pc) ? 0.1 : pc;
+  } else if (engine === "minimax") {
+    tts.minimax_voice = g("MiniVoice");
+  } else {
+    tts.elevenlabs_voice_id = g("ElVoice").trim();
+    tts.elevenlabs_model = g("ElModel").trim();
+    tts.elevenlabs_stability = parseFloat(g("ElStab") || "0.5");
+  }
+  return { engine, tts };
+}
+
+function ttsLabel(engine, t) {
+  if (engine === "edge") return "Edge · " + (t.edge_voice || "");
+  if (engine === "kokoro") return "Kokoro · " + (t.kokoro_voice || "") + (t.kokoro_voice2 && t.kokoro_mix > 0 ? " + " + t.kokoro_voice2 + " " + t.kokoro_mix + "%" : "") + " · ×" + (t.kokoro_speed || 1);
+  if (engine === "minimax") return "MiniMax · " + (t.minimax_voice || "");
+  return "ElevenLabs · " + (t.elevenlabs_voice_id || "") + " · " + (t.elevenlabs_model || "");
+}
+
+/* ---- speak text in the browser (used by Voice Lab and the project Voice tab) ---- */
+async function speakText(text, engine, tts, extra) {
+  const body = { engine, text, tts: Object.assign({}, tts, extra || {}) };
+  return await apiPost("/api/voicelab/say", body);
+}
+
+function playerHTML(item, autoplay) {
+  return '<div class="play-item"><div class="play-meta"><b>' + esc(item.label) + '</b></div>' +
+    (item.text ? '<div class="muted play-text">' + esc(item.text.length > 220 ? item.text.slice(0, 220) + "…" : item.text) + '</div>' : "") +
+    '<audio controls ' + (autoplay ? "autoplay " : "") + 'src="' + item.url + '"></audio>' +
+    '<a class="btn small ghost" href="' + item.url + '?download=1" download>⬇ mp3</a></div>';
+}
+
+/* ---- project Voice tab: hear it right here ---- */
+async function hearHere() {
+  const { engine, tts } = readTts("v");
+  const text = document.getElementById("vHearText").value.trim();
+  const st = document.getElementById("vHearStatus");
+  if (!text) { toast("Type some text first"); return; }
+  st.textContent = "Generating…";
+  const t0 = Date.now();
+  const res = await speakText(text, engine, tts);
+  if (res.error) { st.textContent = ""; toast(res.error); return; }
+  st.textContent = "done in " + ((Date.now() - t0) / 1000).toFixed(1) + " s";
+  const list = document.getElementById("vHearList");
+  list.insertAdjacentHTML("afterbegin", playerHTML({ url: res.url, label: ttsLabel(engine, tts), text }, true));
+}
+
+async function hearSegments() {
+  const { engine, tts } = readTts("v");
+  const segs = ((state.segments && state.segments.youtube) || []).filter(s => (s.narration || "").trim()).slice(0, 3);
+  if (!segs.length) { toast("No segments with narration yet"); return; }
+  const st = document.getElementById("vHearStatus");
+  const list = document.getElementById("vHearList");
+  list.scrollIntoView({ behavior: "smooth", block: "center" });
+  for (let i = 0; i < segs.length; i++) {
+    const sg = segs[i];
+    st.textContent = "Voicing " + sg.id + " (" + (i + 1) + "/" + segs.length + ")…";
+    const res = await speakText(sg.narration, engine, tts, { seg_speed: sg.speed || 1 });
+    if (res.error) { st.textContent = ""; toast(res.error); return; }
+    list.insertAdjacentHTML("beforeend", playerHTML({ url: res.url, label: sg.id + " · " + ttsLabel(engine, tts), text: sg.narration }, i === 0));
+  }
+  st.textContent = "";
+}
+
+/* ---- Voice Lab (no project needed) ---- */
+state.lab = { engine: "kokoro", tts: {}, text: "", history: [] };
+const LAB_SAMPLES = [
+  ["Conversational", "Okay, so here's the thing. Nobody expected him to come back, not after what happened. But he did. And honestly? He looked better than ever."],
+  ["Dramatic", "The door slammed shut. Silence. Then, from somewhere deep in the dark... a single, slow footstep."],
+  ["Hype", "Three seconds left, down by one, and he pulls up from way downtown. Are you kidding me? It's good!"],
+];
+
+function openLab() {
+  state.current = null;
+  renderProjectList();
+  $("emptyState").classList.add("hidden");
+  $("projectView").classList.add("hidden");
+  $("labView").classList.remove("hidden");
+  renderLab();
+}
+
+function renderLab() {
+  const L = state.lab;
+  const engOpts = state.bootstrap.engines.map(e => '<option value="' + e[0] + '"' + (e[0] === L.engine ? " selected" : "") + '>' + esc(e[1]) + '</option>').join("");
+  const defs = (state.bootstrap.default_config && state.bootstrap.default_config.tts) || {};
+  $("labView").innerHTML =
+    '<h1 style="margin-top:0">🎙 Voice Lab</h1>' +
+    '<p class="muted">Type anything, pick an engine and a voice, and listen right here in the browser. Nothing is saved to a project. ' +
+      'ElevenLabs and MiniMax use your credits (keys in 🔑 API keys); Edge needs internet; Kokoro runs on your PC.</p>' +
+    '<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">' +
+      '<div class="card"><h3 style="margin-top:0">Voice</h3>' +
+        '<label>Engine</label><select id="labEngine" onchange="ttsEngineChange(\'lab\');state.lab.engine=this.value">' + engOpts + '</select>' +
+        ttsControlsHTML("lab", Object.assign({}, defs, L.tts), L.engine) +
+      '</div>' +
+      '<div class="card"><h3 style="margin-top:0">Text</h3>' +
+        '<textarea id="labText" rows="9" placeholder="Type or paste what the voice should say…" oninput="state.lab.text=this.value;labCount()">' + esc(L.text) + '</textarea>' +
+        '<div class="muted" id="labCount" style="margin:4px 0 8px"></div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' +
+          LAB_SAMPLES.map((x, i) => '<button class="btn small ghost" onclick="labSample(' + i + ')">' + esc(x[0]) + '</button>').join("") +
+        '</div>' +
+        '<button id="labGo" class="btn primary" onclick="labGenerate()">▶ Generate &amp; play</button> ' +
+        '<span id="labStatus" class="muted"></span>' +
+      '</div>' +
+    '</div>' +
+    '<div id="labHistory">' + L.history.map((h, i) => playerHTML(h, false)).join("") + '</div>';
+  labCount();
+}
+
+function labCount() {
+  const el = document.getElementById("labCount");
+  if (!el) return;
+  const n = (state.lab.text || "").length;
+  el.textContent = n + " characters" + (n > 5000 ? " (max 5000)" : "") + " · tags like [excited] only work on ElevenLabs v3; other engines drop them";
+}
+
+function labSample(i) {
+  state.lab.text = LAB_SAMPLES[i][1];
+  document.getElementById("labText").value = state.lab.text;
+  labCount();
+}
+
+async function labGenerate() {
+  const { engine, tts } = readTts("lab");
+  state.lab.engine = engine;
+  state.lab.tts = tts;
+  const text = document.getElementById("labText").value.trim();
+  const st = document.getElementById("labStatus");
+  const btn = document.getElementById("labGo");
+  if (!text) { toast("Type some text first"); return; }
+  btn.disabled = true;
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    st.textContent = "Generating… " + ((Date.now() - t0) / 1000).toFixed(0) + " s" +
+      (engine === "kokoro" && Date.now() - t0 > 15000 ? " (first Kokoro run downloads the ~350 MB model)" : "");
+  }, 500);
+  st.textContent = "Generating…";
+  let res;
+  try { res = await speakText(text, engine, tts); } finally { clearInterval(tick); btn.disabled = false; }
+  if (res.error) { st.textContent = ""; toast(res.error); document.getElementById("labHistory").insertAdjacentHTML("afterbegin", '<div class="play-item bad">⚠ ' + esc(res.error) + '</div>'); return; }
+  st.textContent = "done in " + ((Date.now() - t0) / 1000).toFixed(1) + " s";
+  const item = { url: res.url, label: ttsLabel(engine, tts), text };
+  state.lab.history.unshift(item);
+  document.getElementById("labHistory").innerHTML = state.lab.history.map((h, i) => playerHTML(h, i === 0)).join("");
 }
 
 function runVoice(preview, force) {

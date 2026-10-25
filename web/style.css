@@ -190,3 +190,8 @@ a { color: var(--accent); }
 .running .pbar { height: 6px; }
 .dot-run { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
+
+.play-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-top: 10px; background: var(--panel); }
+.play-item audio { width: 100%; margin: 8px 0 4px; display: block; }
+.play-text { margin-top: 2px; font-size: 12px; }
+#labView { padding: 4px 2px 40px; }

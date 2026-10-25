@@ -5,6 +5,7 @@
 Run this file (or double-click START_UI.bat) and it opens a browser tab
 that drives the whole video pipeline. Standard library only — no new deps.
 """
+import glob
 import json
 import mimetypes
 import os
@@ -26,6 +27,9 @@ TEMPLATE = os.path.join(BASE, "_template")
 PROJECTS = os.path.join(BASE, "Projects")
 WEB = os.path.join(BASE, "web")
 ENGINE_SRC = os.path.join(TEMPLATE, "recap.py")
+LAB_DIR = os.path.join(BASE, "_voicelab")      # scratch folder for the Voice Lab (no project needed)
+LAB_ENGINES = ("edge", "kokoro", "elevenlabs", "minimax")
+LAB_KEYS = ("edge_", "kokoro_", "elevenlabs_", "minimax_", "seg_speed")
 PY = sys.executable
 
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".mts",
@@ -803,6 +807,12 @@ class Handler(BaseHTTPRequestHandler):
             return serve_file(self, os.path.join(WEB, "style.css"), "text/css; charset=utf-8")
         if path == "/app.js":
             return serve_file(self, os.path.join(WEB, "app.js"), "text/javascript; charset=utf-8")
+        m = re.match(r"^/api/voicelab/audio/(lab_[0-9a-f_]+\.mp3)$", path)
+        if m:
+            full = os.path.join(LAB_DIR, "out", m.group(1))
+            if not os.path.isfile(full):
+                return self.send_json({"error": "file not found"}, 404)
+            return serve_file(self, full, "audio/mpeg", m.group(1) if qs.get("download") else None)
         if path == "/api/bootstrap":
             return self.send_json({
                 "modules": MODULES, "engines": ENGINES,
@@ -853,6 +863,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.create_project(self.read_json_body())
         if path == "/api/elevenlabs/voices":
             return self.api_elevenlabs_voices()
+        if path == "/api/voicelab/say":
+            return self.api_voicelab_say(self.read_json_body())
         if path == "/api/keys":
             return self.api_save_keys(self.read_json_body())
         m = re.match(r"^/api/jobs/([^/]+)/stop$", path)
@@ -1121,6 +1133,63 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self.send_json({"error": "Could not write keys.env: %s" % e}, 500)
         return self.send_json({"ok": True, "keys": keys_overview(), "tools": tools_status()})
+
+    def api_voicelab_say(self, body):
+        engine = str(body.get("engine") or "edge")
+        text = str(body.get("text") or "").strip()
+        if engine not in LAB_ENGINES:
+            return self.send_json({"error": "unknown engine"}, 400)
+        if not text:
+            return self.send_json({"error": "Type some text first."}, 400)
+        if len(text) > 5000:
+            return self.send_json({"error": "Too long for a preview (max 5000 characters)."}, 400)
+        tts = {k: v for k, v in (body.get("tts") or {}).items()
+               if isinstance(k, str) and k.startswith(LAB_KEYS) and isinstance(v, (str, int, float, bool))}
+        try:
+            os.makedirs(os.path.join(LAB_DIR, "out"), exist_ok=True)
+            dst = os.path.join(LAB_DIR, "recap.py")
+            if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(ENGINE_SRC):
+                shutil.copyfile(ENGINE_SRC, dst)
+            pj = os.path.join(LAB_DIR, "project.json")
+            if not os.path.isfile(pj):
+                with open(pj, "w", encoding="utf-8") as f:
+                    json.dump({"module": "movie_recap"}, f)
+            uid = "%d_%s" % (int(time.time() * 1000), uuid.uuid4().hex[:6])
+            tf, cf = os.path.join(LAB_DIR, uid + ".txt"), os.path.join(LAB_DIR, uid + ".json")
+            out = os.path.join(LAB_DIR, "out", "lab_%s.mp3" % uid)
+            with open(tf, "w", encoding="utf-8") as f:
+                f.write(text)
+            with open(cf, "w", encoding="utf-8") as f:
+                json.dump(tts, f)
+            env = dict(os.environ)
+            env["PYTHONUNBUFFERED"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["RECAP_NONINTERACTIVE"] = "1"
+            r = subprocess.run([PY, "recap.py", "say", "--engine", engine, "--text-file", tf,
+                                "--tts-file", cf, "--out", out], cwd=LAB_DIR, env=env, timeout=1500,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            for x in (tf, cf):
+                try:
+                    os.remove(x)
+                except OSError:
+                    pass
+            log = r.stdout.decode("utf-8", "replace")
+            if r.returncode != 0 or not os.path.isfile(out):
+                lines = [l.strip() for l in log.splitlines() if l.strip() and "@@" not in l]
+                err = [l for l in lines if "ERROR" in l or "[!]" in l] or lines[-3:]
+                return self.send_json({"error": " ".join(err)[:500] or "The voice engine failed."}, 502)
+            olds = sorted(glob.glob(os.path.join(LAB_DIR, "out", "lab_*.mp3")), key=os.path.getmtime)[:-40]
+            for x in olds:
+                try:
+                    os.remove(x)
+                except OSError:
+                    pass
+            return self.send_json({"url": "/api/voicelab/audio/" + os.path.basename(out),
+                                   "name": os.path.basename(out), "bytes": os.path.getsize(out)})
+        except subprocess.TimeoutExpired:
+            return self.send_json({"error": "Timed out (the first Kokoro run downloads ~350 MB - try again)."}, 504)
+        except Exception as e:
+            return self.send_json({"error": str(e)}, 500)
 
     def api_elevenlabs_voices(self):
         key = get_first_key("ELEVENLABS_API_KEY")
