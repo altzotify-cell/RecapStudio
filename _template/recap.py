@@ -277,8 +277,12 @@ def find_video(override=None):
     vids = [f for f in os.listdir(".")
             if f.lower().endswith(VIDEO_EXTS) and os.path.isfile(f)
             and not f.lower().startswith("tiktok_")]
+    if not vids and os.path.isdir(FOOTAGE_DIR):
+        vids = [os.path.join(FOOTAGE_DIR, f) for f in os.listdir(FOOTAGE_DIR)
+                if f.lower().endswith(VIDEO_EXTS) and os.path.isfile(os.path.join(FOOTAGE_DIR, f))
+                and not f.lower().startswith("tiktok_")]
     if not vids:
-        die("No episode video in this folder. Drop the video file next to the .bat files.")
+        die("No video found. Put the film in the footage/ folder (or in the project folder).")
     vids.sort(key=os.path.getsize, reverse=True)
     if len(vids) > 1:
         print(f"[i] Several videos found, using the largest: {vids[0]}")
@@ -438,15 +442,32 @@ def glob_by_id(folder, sid, exts):
     return None
 
 
-def default_video():
-    """Soft version of find_video: largest video in the project root, else None."""
-    vids = [f for f in os.listdir(".")
-            if f.lower().endswith(VIDEO_EXTS) and os.path.isfile(f)
-            and not f.lower().startswith("tiktok_") and f.lower() != FINAL_OUT]
+def _largest_video_in(folder):
+    """Largest source video directly inside `folder` ("." = project folder), else None."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    vids = []
+    for f in names:
+        full = f if folder == "." else os.path.join(folder, f)
+        low = f.lower()
+        if (low.endswith(VIDEO_EXTS) and os.path.isfile(full)
+                and not low.startswith("tiktok_") and low != FINAL_OUT):
+            vids.append(full)
     if not vids:
         return None
     vids.sort(key=os.path.getsize, reverse=True)
     return vids[0]
+
+
+def default_video():
+    """The main source video (the film). Looks in the project folder first; for movie / show
+    recaps it also looks in footage/ (the UI's Footage tab puts the film there). Else None."""
+    found = _largest_video_in(".")
+    if not found and MODULE in ("movie_recap", "show_recap"):
+        found = _largest_video_in(FOOTAGE_DIR)
+    return found
 
 
 _PROBE = {}
@@ -891,7 +912,7 @@ def step_index(args):
         todo = [os.path.join(FOOTAGE_DIR, f) for f in sorted(os.listdir(FOOTAGE_DIR))
                 if f.lower().endswith(VIDEO_EXTS)]
     dv = default_video()
-    if dv:
+    if dv and dv not in todo:
         todo.insert(0, dv)
     if not todo:
         die("No video files in footage/ (or in the project folder). Drop footage there first.")
@@ -1544,20 +1565,49 @@ def installed_state():
         return {}
 
 
+def clean_wav_ref(path):
+    """Pocket TTS only reads plain 16-bit WAV without the soundfile library. If the clip is anything else
+    (mp3, m4a, flac, ogg, or a 24-bit / float wav) convert it once with ffmpeg to voices/_converted/<name>.wav
+    (mono, 24 kHz, 16-bit) and use that. If ffmpeg is missing or fails, the original file is used unchanged."""
+    try:
+        if path.lower().endswith(".wav"):
+            with wave.open(path, "rb") as w:
+                if w.getsampwidth() == 2:
+                    return path
+    except Exception:
+        pass  # not a readable 16-bit PCM wav -> convert
+    if not shutil.which("ffmpeg"):
+        return path
+    try:
+        outdir = os.path.join(os.path.dirname(os.path.abspath(path)), "_converted")
+        os.makedirs(outdir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(outdir, f"{stem}.wav")
+        if not (os.path.isfile(out) and os.path.getmtime(out) >= os.path.getmtime(path)):
+            r = run(["ffmpeg", "-y", "-loglevel", "error", "-i", path, "-ac", "1", "-ar", "24000",
+                     "-c:a", "pcm_s16le", out])
+            if r.returncode != 0 or not os.path.isfile(out):
+                return path
+        return out
+    except Exception:
+        return path
+
+
 def resolve_voice_ref(value, allow_builtin=False):
-    """voices/<name>[.wav|.mp3|.flac|.m4a|.ogg], a full path, an hf:// url or (Pocket) a built-in voice name."""
+    """voices/<name>[.wav|.mp3|.flac|.m4a|.ogg], a full path, an hf:// url or (Pocket) a built-in voice name.
+    WAV (16-bit) is the safest format; anything else is converted to WAV automatically (see clean_wav_ref)."""
     v = str(value or "").strip()
     if not v:
         return ""
     if v.startswith(("hf://", "http://", "https://")):
         return v
     if os.path.isabs(v) and os.path.isfile(v):
-        return v
+        return clean_wav_ref(v)
     vd = os.path.join(studio_base(), "voices")
     for cand in (v, v + ".wav", v + ".mp3", v + ".flac", v + ".m4a", v + ".ogg"):
         p = os.path.join(vd, cand)
         if os.path.isfile(p):
-            return p
+            return clean_wav_ref(p)
     if allow_builtin:
         return v
     die(f"Reference voice '{v}' was not found. Put a clean 5-15 second clip in:\n  {vd}\n(or give a full path).")

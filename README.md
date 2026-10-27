@@ -20,6 +20,31 @@ Local studio for making recap videos: collect footage, write the script with Cla
 
 Run `SETUP.bat` again at any time to add engines. Chatterbox needs Python 3.11 or 3.10; Nano is installed from the GitHub `master` branch because the PyPI release does not include it yet.
 
+## Pocket TTS voice cloning (one-time setup)
+
+Cloning uses Kyutai's gated weights. Built-in Pocket voices work without this.
+
+1. Accept the terms at https://huggingface.co/kyutai/pocket-tts ("Agree and access repository").
+2. Create a Read token at https://huggingface.co/settings/tokens.
+3. Paste the token in the app under **🔑 API keys → Hugging Face token** (or add `HF_TOKEN=hf_yourtoken` to `keys.env`).
+4. Run `SETUP.bat` and pick Pocket TTS again (or `venvs\pocket\Scripts\python tts_worker.py --download pocket`). It prints `voice cloning: READY` when it worked.
+
+## Reference clip format
+
+Use a **16-bit WAV** for voice cloning (5-15 s, one speaker). The app's **Upload clip** button converts mp3/m4a/flac/ogg to WAV automatically (needs ffmpeg), and non-WAV files dropped into `voices/` are converted when you generate.
+
+If Pocket TTS reports `soundfile is required to read non-WAV or non-16-bit WAV audio files`, either install the helper once (new Pocket installs from `SETUP.bat` already include it):
+
+```
+venvs\pocket\Scripts\python -m pip install soundfile
+```
+
+or convert the clip yourself:
+
+```
+ffmpeg -i myclip.mp3 -ac 1 -ar 24000 -c:a pcm_s16le myclip.wav
+```
+
 ## Notes
 
 - Chatterbox output carries Resemble AI's Perth watermark.

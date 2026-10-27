@@ -47,6 +47,11 @@ FOOTAGE FITTING
   Stills get a slow zoom. Original sound is off unless the segment has "keep_audio": true (or 0-1 volume).
 
 VOICE
+  Pocket TTS voice CLONING needs a free Hugging Face token (built-in voices do not): accept the terms at
+  huggingface.co/kyutai/pocket-tts, then paste a Read token in the app (API keys -> Hugging Face token) or put
+  HF_TOKEN=hf_... in the main keys.env, and restart. Details: START_HERE.txt / the in-app guide.
+  Reference clips: use a 16-bit WAV. Other formats are converted automatically; if Pocket says "soundfile is required",
+  run  venvs\pocket\Scripts\python -m pip install soundfile  or convert:  ffmpeg -i myclip.mp3 -ac 1 -ar 24000 -c:a pcm_s16le myclip.wav
   tts_mode in project.json: plain | light | heavy. Tags ([excited] etc.) are sent ONLY to ElevenLabs v3 and
   only in light/heavy; Edge/MiniMax and other models always get plain text (tags would be read aloud).
   Names respelled for pronunciation: put the real spelling in "subtitle".

@@ -73,6 +73,7 @@
   <li><b class="t">Double-click START_UI.bat</b>Your browser opens Recap Studio. Keep the black window open while you work; close it to stop the app.</li>
   <li><b class="t">Check the tool lights (bottom-left)</b>FFmpeg, ffprobe, yt-dlp and edge-tts should be green.</li>
   <li><b class="t">Add API keys (optional): click 🔑 API keys</b>Paste your ElevenLabs and/or MiniMax key and press Save. You can paste several keys separated by commas. <b>You can skip this entirely and use Edge-TTS, which is free and needs no key.</b></li>
+  <li><b class="t">Pocket TTS voice cloning only: add a Hugging Face token</b>See <a href="#pocket-clone">Pocket TTS voice cloning setup</a> below. Built-in Pocket voices and every other engine do not need it.</li>
 </ol>
 <div class="warn"><b>Keys are secrets.</b> They are saved only in <code>keys.env</code> on your computer. Never send that file to anyone, and if you share the RecapStudio folder, delete or blank <code>keys.env</code> first.</div>
 
@@ -236,7 +237,23 @@
 <tr><td><b>Emotion</b></td><td>Nano / Turbo: <code>[laugh] [chuckle] [sigh] [gasp] [cough] [groan] [yawn] [sniff] [clearing_throat]</code>. Original / Multilingual: <b>Exaggeration</b> and <b>Pacing</b> sliders</td><td>Variation (temperature) and quality steps</td></tr>
 <tr><td><b>Speed / pauses</b></td><td colspan="2">Per-segment <code>speed</code> works (pitch is kept). <code>[pause]</code> and <code>[long pause]</code> in the script become real silence. Long narration is split into sentence groups automatically.</td></tr>
 </table>
-<p><b>Cloning a voice:</b> Voice tab (or Voice Lab) → pick the engine → <b>⬆ Upload clip</b>, or drop the file into the <code>voices</code> folder and type its name. Use one speaker, no music, no echo, 5-15 seconds. Only clone voices you have the right to use. Chatterbox output carries an inaudible Perth watermark from Resemble AI.</p>
+<p><b>Cloning a voice:</b> Voice tab (or Voice Lab) → pick the engine → <b>⬆ Upload clip</b>, or drop the file into the <code>voices</code> folder and type its name. Use one speaker, no music, no echo, 5-15 seconds. <b>Best format: a 16-bit WAV.</b> Upload clip converts mp3/m4a/flac/ogg to WAV for you; files you drop into <code>voices</code> by hand are converted when you generate (see <a href="#clip-format">Clip format</a>). Only clone voices you have the right to use. Chatterbox output carries an inaudible Perth watermark from Resemble AI.</p>
+<h3 id="clip-format">Reference clip format (WAV)</h3>
+<p>Voice cloning reads a plain <b>16-bit WAV</b> most reliably. The app converts other formats for you, but if Pocket TTS shows <i>"soundfile is required to read non-WAV or non-16-bit WAV audio files"</i>, pick one fix:</p>
+<ol class="steps">
+  <li><b class="t">Option 1: install soundfile (once)</b>Open a terminal in the Recap Studio folder (click the address bar, type <code>cmd</code>, press Enter) and run <code>venvs\pocket\Scripts\python -m pip install soundfile</code>. Restart <code>START_UI.bat</code>. MP3, FLAC, OGG and M4A clips then work directly. New Pocket installs from <code>SETUP.bat</code> include it already.</li>
+  <li><b class="t">Option 2: convert to WAV</b>Run <code>ffmpeg -i myclip.mp3 -ac 1 -ar 24000 -c:a pcm_s16le myclip.wav</code>, put <code>myclip.wav</code> in the <code>voices</code> folder and use that name.</li>
+</ol>
+<h3 id="pocket-clone">Pocket TTS voice cloning setup (one time)</h3>
+<p>Pocket TTS's built-in voices work right after install. <b>Cloning</b> needs Kyutai's gated weights, which need a free Hugging Face account and token. Without it you get the error <i>"We could not download the weights for the model with voice cloning"</i>.</p>
+<ol class="steps">
+  <li><b class="t">Accept the terms</b>Log in at huggingface.co, open <code>huggingface.co/kyutai/pocket-tts</code> and click <b>Agree and access repository</b>.</li>
+  <li><b class="t">Make a token</b>Go to <code>huggingface.co/settings/tokens</code> → New token → type <b>Read</b>. Copy the <code>hf_...</code> text (it is shown only once).</li>
+  <li><b class="t">Paste it here</b>Click <b>🔑 API keys</b> → <b>Hugging Face token</b> → paste → <b>Save keys</b>. (It is saved in <code>keys.env</code> as <code>HF_TOKEN=</code>.)</li>
+  <li><b class="t">Restart the app</b>Close the black window and run <code>START_UI.bat</code> again.</li>
+  <li><b class="t">Clone</b>Voice tab → Pocket TTS → upload or type a clip name. The first clone downloads the cloning weights (needs internet once); after that it works offline.</li>
+</ol>
+<div class="tip"><b>Check it worked:</b> open a terminal in the Recap Studio folder and run <code>venvs\pocket\Scripts\python tts_worker.py --download pocket</code>. It should end with <b>voice cloning: READY</b>. If it says NOT available, the terms in step 1 were accepted on a different Hugging Face account than the token, or the token is wrong.</div>
 <p><b>Tags:</b> to use Turbo's <code>[laugh]</code> etc., set the project's <i>voice style</i> to <b>light</b> or <b>heavy</b> (the PASTE_THIS_TO_CLAUDE prompt already explains the tags to Claude). In <b>plain</b> mode every tag is stripped so nothing is read aloud.</p>
 <p>After installing, reload this page so the sidebar shows the engine as installed. The first generation downloads the model; the Voice Lab then loads it again for every preview (10-30 s for Chatterbox), while a full <b>Generate</b> loads it once for the whole video.</p>
 
@@ -284,6 +301,8 @@
   <tr><td>"This video has no embedded subtitle tracks"</td><td>Download an English .srt for that version of the film and put it in <code>subs/</code>.</td></tr>
   <tr><td>A footage download fails (403 or blocked)</td><td>The app already retries with several YouTube methods. If it still fails, download the clip another way and use <b>📎 Attach file</b>.</td></tr>
   <tr><td>"No ElevenLabs key found"</td><td>Click 🔑 API keys and paste it, or switch the Voice tab to Edge-TTS.</td></tr>
+  <tr><td>Pocket TTS: "could not download the weights for the model with voice cloning"</td><td>Add your Hugging Face token (🔑 API keys) after accepting the terms at huggingface.co/kyutai/pocket-tts, restart the app. Steps: <a href="#pocket-clone">Pocket TTS voice cloning setup</a>.</td></tr>
+  <tr><td>Pocket TTS: "soundfile is required to read non-WAV or non-16-bit WAV audio files"</td><td>The clip is not a plain 16-bit WAV. Install soundfile (<code>venvs\pocket\Scripts\python -m pip install soundfile</code>, then restart) or convert it (<code>ffmpeg -i myclip.mp3 -ac 1 -ar 24000 -c:a pcm_s16le myclip.wav</code>). Details: <a href="#clip-format">Clip format</a>.</td></tr>
   <tr><td>Voice-over is longer than the target</td><td>Ask Claude to shorten the longest segments from the log, import, Generate again.</td></tr>
   <tr><td>A tool light is red</td><td>Run SETUP.bat again, then restart START_UI.bat.</td></tr>
   <tr><td>Need to continue in a new chat</td><td>Open the project's Dashboard, copy the Status / next steps text (also saved as STATE.md) and paste it to Claude.</td></tr>

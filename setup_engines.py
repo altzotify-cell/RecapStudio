@@ -191,6 +191,19 @@ def download_models(vpy, spec):
     return subprocess.call(cmd, env=model_env()) == 0
 
 
+def _has_hf_token():
+    if os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"):
+        return True
+    try:
+        for line in open(os.path.join(BASE, "keys.env"), "r", encoding="utf-8"):
+            line = line.strip()
+            if line.startswith("HF_TOKEN=") and line.split("=", 1)[1].strip() not in ("", "paste_your_token_here"):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def install_pocket(st):
     say("\n=== Pocket TTS (offline, CPU-friendly, voice cloning) ===")
     py = find_python(["3.12", "3.11", "3.13", "3.10"]) or [sys.executable]
@@ -199,13 +212,19 @@ def install_pocket(st):
     vpy = venv_python("pocket") or os.path.join(VENVS, "pocket", "Scripts", "python.exe")
     ok = (pip(vpy, "--upgrade", "pip", "wheel")
           and pip(vpy, "torch", "--index-url", "https://download.pytorch.org/whl/cpu")
-          and pip(vpy, "pocket-tts"))
+          and pip(vpy, "pocket-tts", "soundfile"))   # soundfile lets Pocket read MP3/FLAC/OGG/M4A clips
     if not ok:
         return False
     say("   Downloading the Pocket TTS model and its built-in voices ...")
     if not download_models(vpy, "pocket"):
         return False
     st["pocket"] = True
+    if not _has_hf_token():
+        say("\n   NOTE: Pocket TTS voice CLONING needs a free Hugging Face token.\n"
+            "   1) Accept the terms at https://huggingface.co/kyutai/pocket-tts\n"
+            "   2) Make a Read token at https://huggingface.co/settings/tokens\n"
+            "   3) Add  HF_TOKEN=hf_yourtoken  to keys.env, then run SETUP.bat again (pick Pocket TTS).\n"
+            "   Built-in voices work without it.")
     return True
 
 

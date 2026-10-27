@@ -114,7 +114,7 @@ function renderTools() {
     ["FFmpeg", t.ffmpeg], ["ffprobe", t.ffprobe], ["yt-dlp", t.ytdlp],
     ["edge-tts", t.edge_tts], ["requests", t.requests],
     ["Chatterbox", t.chatterbox], ["Pocket TTS", t.pocket],
-    ["ElevenLabs keys", t.keys.ELEVENLABS_API_KEY], ["MiniMax keys", t.keys.MINIMAX_API_KEY],
+    ["ElevenLabs keys", t.keys.ELEVENLABS_API_KEY], ["MiniMax keys", t.keys.MINIMAX_API_KEY], ["Hugging Face token", t.keys.HF_TOKEN],
   ];
   $("toolsStatus").innerHTML =
     '<div class="row muted" style="font-weight:700;padding-bottom:4px">Tools</div>' +
@@ -994,7 +994,7 @@ async function uploadVoiceRef(input, inputId, listId) {
       const have = Array.from(dl.options).map(o => o.value);
       (j.voice_files || []).forEach(n => { const b = n.replace(/\.[^.]+$/, ""); if (!have.includes(b)) dl.insertAdjacentHTML("beforeend", '<option value="' + esc(b) + '">'); });
     }
-    toast("Saved to voices/" + j.file + " ✓");
+    toast("Saved to voices/" + j.file + " ✓" + (j.note ? " " + j.note : ""));
   } catch (e) { toast("Upload failed: " + e); }
   input.value = "";
 }
@@ -1031,7 +1031,7 @@ function ttsControlsHTML(p, t, engine) {
         opts(bs.chatterbox_variants, t.chatterbox_variant || "turbo") + '</select>' +
       '<div id="' + p + 'CbLangRow" class="' + ((t.chatterbox_variant || "turbo") === "multilingual" ? "" : "hidden") + '">' +
         '<label>Language</label><select id="' + p + 'CbLang">' + opts(bs.chatterbox_langs, t.chatterbox_language || "en") + '</select></div>' +
-      '<label>Reference voice - clone any voice from a 5-15 s clip (blank = built-in voice)</label>' +
+      '<label>Reference voice - clone any voice from a 5-15 s clip, best as .wav (blank = built-in voice)</label>' +
       voiceRefField(p + "CbVoice", p + "CbList", t.chatterbox_voice || "", bs.voice_files) +
       '<div id="' + p + 'CbEmoRow" class="form-row ' + (["turbo", "nano"].includes(t.chatterbox_variant || "turbo") ? "hidden" : "") + '">' +
         '<div><label>Exaggeration (0.25 flat · 0.5 normal · 1+ dramatic)</label><input id="' + p + 'CbExag" value="' + esc(t.chatterbox_exaggeration != null ? t.chatterbox_exaggeration : 0.5) + '"></div>' +
@@ -1065,7 +1065,7 @@ function ttsControlsHTML(p, t, engine) {
         '<div><label>Pause between sentences (s)</label><input id="' + p + 'PkPause" value="' + esc(t.pocket_sentence_pause != null ? t.pocket_sentence_pause : 0.25) + '"></div></div>' +
       '<label class="chk"><input type="checkbox" id="' + p + 'PkNorm"' + (t.tts_normalize === false ? "" : " checked") + '> Level every clip to the same loudness</label>' +
       '<p class="muted">Tiny 100M model that runs faster than real time on a normal CPU. English only, no emotion tags (they are stripped); ' +
-        '<code>[pause]</code> works. Voice cloning needs only a short clean clip.' +
+        '<code>[pause]</code> works. Voice cloning needs only a short clean clip, best as a 16-bit <b>.wav</b> (Upload clip converts mp3/m4a/flac/ogg for you). If you see <i>soundfile is required</i>, see the guide: Clip format.' +
         (bs.tools.pocket ? "" : ' <span class="bad">Not installed: run SETUP.bat and pick Pocket TTS, then reload this page.</span>') + '</p>' +
     '</div>' +
     '<div id="' + p + 'Mini" class="' + hid("minimax") + '">' +
@@ -1556,9 +1556,10 @@ init();
 /* ------------------------------------------------------------------ */
 /* API keys                                                            */
 /* ------------------------------------------------------------------ */
-const KEY_DEFS = [
+const KEY_DEFS = [  // [env name, label, help, optional placeholder]
   ["ELEVENLABS_API_KEY", "ElevenLabs", "Best quality voices. Several keys allowed (comma-separated): the tool switches key when one runs out of credits."],
   ["MINIMAX_API_KEY", "MiniMax", "Alternative voice engine (speech-2.6-hd). Several keys allowed."],
+  ["HF_TOKEN", "Hugging Face token (Pocket TTS voice cloning)", "Free. First accept the terms at huggingface.co/kyutai/pocket-tts, then make a Read token at huggingface.co/settings/tokens and paste it here (one token, starts with hf_). Restart Recap Studio after saving; the first cloning run downloads the weights, so it needs internet once.", "hf_..."],
 ];
 
 function keyChips(list) {
@@ -1575,14 +1576,14 @@ async function keysModal() {
     '<p class="muted">Saved on this computer in <code>keys.env</code> and used by every project. ' +
     'Saved keys are never shown in full (only the last 4 characters). ' +
     '<b>Edge-TTS needs no key</b> - it is free.</p>' +
-    KEY_DEFS.map(([name, label, help]) =>
+    KEY_DEFS.map(([name, label, help, ph]) =>
       '<div class="card" style="margin-bottom:12px">' +
         '<div style="display:flex;justify-content:space-between;align-items:center"><b>' + label + '</b>' +
         '<span>' + keyChips(keys[name] || []) + '</span></div>' +
         '<div class="muted" style="margin:6px 0">' + help + '</div>' +
         '<label>' + ((keys[name] || []).length ? "Replace with (leave blank to keep what is saved)" : "Paste key(s)") + '</label>' +
         '<div style="display:flex;gap:8px">' +
-          '<input type="password" autocomplete="off" spellcheck="false" data-key-input="' + name + '" placeholder="key1, key2, ..." style="flex:1">' +
+          '<input type="password" autocomplete="off" spellcheck="false" data-key-input="' + name + '" placeholder="' + (ph || "key1, key2, ...") + '" style="flex:1">' +
           '<button class="btn small" type="button" onclick="toggleKeyVisible(\'' + name + '\')">Show</button>' +
           ((keys[name] || []).length
             ? '<button class="btn danger small" type="button" onclick="removeKey(\'' + name + '\')">Remove</button>' : "") +

@@ -21,6 +21,49 @@ REAL_OUT = sys.stdout
 sys.stdout = sys.stderr          # libraries love to print(); keep stdout for the protocol only
 
 
+BASE = os.path.dirname(os.path.abspath(__file__))
+
+
+def find_hf_token():
+    """Hugging Face token for gated models (Pocket TTS voice cloning).
+    Order: HF_TOKEN env var -> HF_TOKEN= line in keys.env (this folder, then its parents).
+    Never printed or logged."""
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        if os.environ.get(name, "").strip():
+            return os.environ[name].strip()
+    for d in (BASE, os.path.dirname(BASE), os.path.dirname(os.path.dirname(BASE))):
+        p = os.path.join(d, "keys.env")
+        if not os.path.isfile(p):
+            continue
+        try:
+            for line in open(p, "r", encoding="utf-8"):
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == "HF_TOKEN":
+                    v = v.strip().strip("\"'")
+                    if v and v != "paste_your_token_here":
+                        return v
+        except Exception:
+            pass
+    return None
+
+
+_tok = find_hf_token()
+if _tok:
+    os.environ["HF_TOKEN"] = _tok          # huggingface_hub reads this automatically
+
+
+CLONE_HELP = (
+    "Voice cloning needs Kyutai's gated weights. Do this once: (1) open "
+    "https://huggingface.co/kyutai/pocket-tts and click 'Agree and access repository', "
+    "(2) make a Read token at https://huggingface.co/settings/tokens, "
+    "(3) add a line  HF_TOKEN=hf_yourtoken  to keys.env, "
+    "(4) run  venvs\\pocket\\Scripts\\python tts_worker.py --download pocket  and restart the app."
+)
+
+
 def reply(obj):
     REAL_OUT.write(json.dumps(obj) + "\n")
     REAL_OUT.flush()
@@ -151,7 +194,15 @@ class Pocket:
     def voice_state(self, voice):
         voice = (voice or "alba").strip()
         if voice not in self.states:
-            self.states[voice] = self.model.get_state_for_audio_prompt(voice)
+            try:
+                self.states[voice] = self.model.get_state_for_audio_prompt(voice)
+            except ValueError as e:
+                if "voice cloning" in str(e).lower():
+                    why = ("No Hugging Face token was found (HF_TOKEN in keys.env). " if not find_hf_token()
+                           else "A token was found, but the cloning weights were not downloaded - "
+                                "make sure you accepted the terms on the kyutai/pocket-tts page. ")
+                    raise RuntimeError(why + CLONE_HELP) from None
+                raise
         return self.states[voice]
 
     def say(self, text, out, p):
@@ -174,11 +225,44 @@ def _i(v):
         return None
 
 
+def _clone_selftest(model):
+    """Feed a 1-second test tone through the voice encoder to see if cloning weights are present."""
+    import tempfile
+    import wave
+    import math
+    import struct
+    path = os.path.join(tempfile.gettempdir(), "recap_pocket_clonetest.wav")
+    try:
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(24000)
+            w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * i / 24000)))
+                                   for i in range(24000)))
+        model.get_state_for_audio_prompt(path)
+        print("  voice cloning: READY", file=sys.stderr)
+    except ValueError as e:
+        if "voice cloning" in str(e).lower():
+            print("  [!] voice cloning: NOT available yet. " + CLONE_HELP, file=sys.stderr)
+        else:
+            print(f"  (clone self-test inconclusive: {e})", file=sys.stderr)
+    except Exception as e:
+        print(f"  (clone self-test inconclusive: {type(e).__name__}: {e})", file=sys.stderr)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def download(spec):
     """SETUP.bat calls:  tts_worker.py --download chatterbox:nano,turbo   or   --download pocket"""
     kind, _, rest = spec.partition(":")
     if kind == "pocket":
         from pocket_tts import TTSModel
+        if not find_hf_token():
+            print("  [!] No HF_TOKEN found (env var or keys.env). Built-in voices will work, "
+                  "but voice cloning will NOT.", file=sys.stderr)
         m = TTSModel.load_model()
         for v in ("alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"):
             try:
@@ -186,6 +270,7 @@ def download(spec):
                 print(f"  voice {v} ready", file=sys.stderr)
             except Exception as e:
                 print(f"  (voice {v} skipped: {e})", file=sys.stderr)
+        _clone_selftest(m)
         print("Pocket TTS ready.", file=sys.stderr)
         return 0
     bad = 0

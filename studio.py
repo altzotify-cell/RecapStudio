@@ -165,7 +165,7 @@ def has_module(name):
 
 def load_keys():
     """Count API keys in keys.env without ever returning the values."""
-    out = {"ELEVENLABS_API_KEY": 0, "MINIMAX_API_KEY": 0}
+    out = {"ELEVENLABS_API_KEY": 0, "MINIMAX_API_KEY": 0, "HF_TOKEN": 0}
     paths = [os.path.join(BASE, "keys.env"),
              os.path.join(os.path.dirname(BASE), "keys.env"),
              os.path.join(os.path.dirname(os.path.dirname(BASE)), "keys.env")]
@@ -208,7 +208,7 @@ def get_first_key(name):
     return None
 
 
-KEY_NAMES = ("ELEVENLABS_API_KEY", "MINIMAX_API_KEY")
+KEY_NAMES = ("ELEVENLABS_API_KEY", "MINIMAX_API_KEY", "HF_TOKEN")
 KEY_PLACEHOLDER = "paste_your_key_here"
 KEY_ALLOWED = re.compile(r"^[A-Za-z0-9_\-\.]+$")
 
@@ -243,7 +243,7 @@ def keys_overview():
 
 def save_keys(updates):
     """updates: {NAME: "key1, key2"}.  Empty string removes (comments out) that key.
-    Only the two known names are touched; every other line in keys.env is kept as it was."""
+    Only the known names (ElevenLabs, MiniMax, HF_TOKEN) are touched; every other line in keys.env is kept as it was."""
     p = keys_file()
     lines = []
     if os.path.isfile(p):
@@ -253,6 +253,8 @@ def save_keys(updates):
         if name not in KEY_NAMES:
             raise ValueError("unknown key name: %s" % name)
         vals = split_keys(raw)
+        if name == "HF_TOKEN" and len(vals) > 1:
+            raise ValueError("HF_TOKEN: paste just one Hugging Face token.")
         for v in vals:
             if not KEY_ALLOWED.match(v):
                 raise ValueError("%s: a key contains characters that are not allowed (spaces, quotes or symbols). "
@@ -283,6 +285,39 @@ def venv_python(name):
         if os.path.isfile(p):
             return p
     return None
+
+
+def to_clean_wav(path):
+    """Convert an uploaded reference clip to mono 24 kHz 16-bit WAV next to it (the original is removed).
+    Returns (file_name, converted?). A clip that is already a 16-bit WAV is left alone."""
+    import wave
+    try:
+        if path.lower().endswith(".wav"):
+            with wave.open(path, "rb") as w:
+                if w.getsampwidth() == 2:
+                    return os.path.basename(path), False
+    except Exception:
+        pass
+    if not shutil.which("ffmpeg"):
+        return os.path.basename(path), False
+    out = os.path.splitext(path)[0] + ".wav"
+    tmp_out = out + ".conv.wav"
+    try:
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", path, "-ac", "1", "-ar", "24000",
+                            "-c:a", "pcm_s16le", tmp_out], capture_output=True, timeout=120)
+        if r.returncode != 0 or not os.path.isfile(tmp_out):
+            return os.path.basename(path), False
+        if os.path.abspath(out) != os.path.abspath(path):
+            os.remove(path)
+        os.replace(tmp_out, out)
+        return os.path.basename(out), True
+    except Exception:
+        try:
+            if os.path.isfile(tmp_out):
+                os.remove(tmp_out)
+        except OSError:
+            pass
+        return os.path.basename(path), False
 
 
 def voice_files():
@@ -1284,7 +1319,16 @@ class Handler(BaseHTTPRequestHandler):
             os.remove(tmp)
             return self.send_json({"error": "upload was cut off - try again"}, 400)
         os.replace(tmp, dest)
-        return self.send_json({"ok": True, "file": fname, "voice_files": voice_files()})
+        note = ""
+        # Pocket TTS reads plain 16-bit WAV most reliably: convert anything else to WAV right here.
+        wav_name, converted = to_clean_wav(dest)
+        if converted:
+            fname = wav_name
+            note = "Converted to WAV automatically."
+        elif not dest.lower().endswith(".wav"):
+            note = ("Saved, but ffmpeg could not convert it to WAV. Pocket TTS may need a WAV: see "
+                    "voices/README.txt for the one-line ffmpeg command.")
+        return self.send_json({"ok": True, "file": fname, "voice_files": voice_files(), "note": note})
 
     def api_elevenlabs_voices(self):
         key = get_first_key("ELEVENLABS_API_KEY")
