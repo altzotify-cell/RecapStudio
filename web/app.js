@@ -979,6 +979,49 @@ function voiceRefField(inputId, listId, value, names) {
   '</div>';
 }
 
+/* ---- Pocket TTS voice: a real dropdown (built-in voices + your clips + Custom) with Upload clip beside it ---- */
+function pocketVoiceField(p, value, builtins, files) {
+  const stem = n => n.replace(/\.[^.]+$/, "");
+  const clips = (files || []).map(stem);
+  const names = (builtins || []).map(v => v[0]);
+  const known = names.includes(value) || clips.includes(value);
+  const id = p + "PkVoice";
+  return '<div style="display:flex;gap:8px;align-items:center">' +
+      '<select id="' + id + 'Sel" onchange="pocketVoicePick(\'' + id + '\')">' +
+        '<optgroup label="Built-in voices">' +
+          (builtins || []).map(v => '<option value="' + esc(v[0]) + '"' + (v[0] === value ? " selected" : "") + '>' + esc(v[1] || v[0]) + '</option>').join("") +
+        '</optgroup>' +
+        '<optgroup label="My clips (voices folder)" id="' + id + 'Clips">' +
+          clips.map(c => '<option value="' + esc(c) + '"' + (c === value ? " selected" : "") + '>' + esc(c) + '</option>').join("") +
+        '</optgroup>' +
+        '<option value="__custom__"' + (known ? "" : " selected") + '>Custom… (file path or hf:// link)</option>' +
+      '</select>' +
+      '<label class="btn small" style="margin:0;cursor:pointer">⬆ Upload clip<input type="file" accept="audio/*" style="display:none" ' +
+        'onchange="uploadVoiceRef(this,\'' + id + '\',\'\')"></label>' +
+    '</div>' +
+    '<input id="' + id + '" value="' + esc(value) + '" placeholder="path to a clip, or hf://…" style="margin-top:8px' + (known ? ";display:none" : "") + '">';
+}
+
+function pocketVoicePick(id) {
+  const sel = document.getElementById(id + "Sel"), inp = document.getElementById(id);
+  if (sel.value === "__custom__") { inp.style.display = ""; inp.focus(); }
+  else { inp.value = sel.value; inp.style.display = "none"; }
+}
+
+/* called after an uploaded clip is saved: add it to the Pocket dropdown and select it */
+function voiceRefUploaded(inputId, stem) {
+  const sel = document.getElementById(inputId + "Sel");
+  if (!sel) return;
+  if (!Array.from(sel.options).some(o => o.value === stem)) {
+    const o = document.createElement("option");
+    o.value = stem; o.textContent = stem;
+    document.getElementById(inputId + "Clips").appendChild(o);
+  }
+  sel.value = stem;
+  const inp = document.getElementById(inputId);
+  inp.value = stem; inp.style.display = "none";
+}
+
 async function uploadVoiceRef(input, inputId, listId) {
   const f = input.files && input.files[0];
   if (!f) return;
@@ -994,6 +1037,7 @@ async function uploadVoiceRef(input, inputId, listId) {
       const have = Array.from(dl.options).map(o => o.value);
       (j.voice_files || []).forEach(n => { const b = n.replace(/\.[^.]+$/, ""); if (!have.includes(b)) dl.insertAdjacentHTML("beforeend", '<option value="' + esc(b) + '">'); });
     }
+    voiceRefUploaded(inputId, j.file.replace(/\.[^.]+$/, ""));
     toast("Saved to voices/" + j.file + " ✓" + (j.note ? " " + j.note : ""));
   } catch (e) { toast("Upload failed: " + e); }
   input.value = "";
@@ -1054,8 +1098,8 @@ function ttsControlsHTML(p, t, engine) {
         (bs.tools.chatterbox ? "" : ' <span class="bad">Not installed: run SETUP.bat and pick Chatterbox, then reload this page.</span>') + '</p>' +
     '</div>' +
     '<div id="' + p + 'Pocket" class="' + hid("pocket") + '">' +
-      '<label>Voice - pick one, or type a file name from voices/ / a path / an hf:// link to clone</label>' +
-      voiceRefField(p + "PkVoice", p + "PkList", t.pocket_voice || "alba", bs.pocket_voices.map(v => v[0]).concat(bs.voice_files)) +
+      '<label>Voice - pick a built-in voice or one of your clips, or choose Custom to clone from a path / hf:// link</label>' +
+      pocketVoiceField(p, t.pocket_voice || "alba", bs.pocket_voices, bs.voice_files) +
       '<div class="form-row3">' +
         '<div><label>Variation (temperature)</label><input id="' + p + 'PkTemp" value="' + esc(t.pocket_temperature != null ? t.pocket_temperature : 0.7) + '"></div>' +
         '<div><label>Quality steps (1 fast · 3-5 cleaner)</label><input id="' + p + 'PkSteps" value="' + esc(t.pocket_lsd_steps != null ? t.pocket_lsd_steps : 1) + '"></div>' +
