@@ -20,6 +20,10 @@ Local studio for making recap videos: collect footage, write the script with Cla
 
 Run `SETUP.bat` again at any time to add engines. Chatterbox needs Python 3.11 or 3.10; Nano is installed from the GitHub `master` branch because the PyPI release does not include it yet.
 
+## Character animation
+
+Add transparent PNG cut-outs in the **Characters** tab (or `characters/` in a project). A segment with `"character": "name"` shows the character in a corner over the clip; a `"commentary": true` segment with no footage becomes a solo scene (character centered on a background). A `talk` pose follows the voice-over. In the Premiere XML and VideoPad project the character is its own video track; the mp4 / TikTok builds bake it in. Fields: `character`, `char_pos`, `char_layout`, `char_pose`, `char_anim`, `char_enter`, `char_exit`, `char_bg`, `char_scale`, `char_flip`, `char_outline`, `char_shadow`, `char_x`, `char_y`. Needs Pillow (installed by `SETUP.bat`).
+
 ## Pocket TTS voice cloning (one-time setup)
 
 Cloning uses Kyutai's gated weights. Built-in Pocket voices work without this.

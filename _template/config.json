@@ -40,5 +40,19 @@
   },
   "fill": "pad",
   "keep_audio_volume": 0.3,
-  "music_volume": 0.12
+  "music_volume": 0.12,
+  "character": {
+    "corner_pos": "bottom-right",
+    "corner_scale": 0.46,
+    "solo_scale": 0.8,
+    "idle": "talk",
+    "enter": "slide",
+    "exit": "slide",
+    "solo_enter": "pop",
+    "solo_exit": "fade",
+    "shadow": true,
+    "outline": "",
+    "solo_bg": "gradient:#1b2030,#43305f",
+    "codec": "qtrle"
+  }
 }

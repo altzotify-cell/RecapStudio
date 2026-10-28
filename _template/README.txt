@@ -18,7 +18,8 @@ QUICK START
 FOLDERS
   footage\   source clips / episodes (collect saves <segment id>.mp4 here)
   images\    stills; music\  tracks for the music bed
-  clips\ gfx\ audio_trim\  generated - don't move/rename after importing into Premiere
+  characters\  transparent PNG cut-outs for character animation (see CHARACTER ANIMATION below)
+  clips\ gfx\ audio_trim\ char_layers\  generated - don't move/rename after importing into Premiere
 
 SEGMENT FIELDS (all optional except id/narration; see PASTE_THIS_TO_CLAUDE.txt)
   src, src_start, src_end, image, caption, keep_audio, rank, chapter, shot, need_visual, subtitle
@@ -26,7 +27,7 @@ SEGMENT FIELDS (all optional except id/narration; see PASTE_THIS_TO_CLAUDE.txt)
   the one big video in this folder (needs src_start) -> a SLATE card (missing shot).
 
 PREMIERE OUTPUT (premiere_sequence.xml)
-  V1 footage / stills / slates     V2 number + caption graphics (transparent .mov in gfx\)
+  V1 footage / stills / slates     one track per character (if used)    then number + caption graphics (transparent .mov in gfx\)
   A1 voice-over   A2 original sound (only segments with keep_audio)   A3 music bed (music on + file in music\)
   Sequence markers: chapters and MISSING shots.  Also written: recap_subtitles.srt (captions from your
   narration text), recap_onscreen.srt (backup for number/caption text), chapters.txt, shot_manifest.csv.
@@ -40,6 +41,20 @@ VIDEOPAD OUTPUT (videopad_project.vpj)   menu 19 / 4d_build_videopad_project.bat
   If VideoPad will not open the full project: menu 20 / 4e_build_videopad_project_simple.bat writes a V1 + A1
   version (picture and voice muxed into one file per segment in clips_av\) - no graphics, original sound or music.
   The project stores file paths, not media: keep clips\, clips_av\, gfx\ and audio_trim\ where they are.
+
+CHARACTER ANIMATION (works in every module)
+  Put transparent PNG cut-outs in characters\ (details: characters\_put_files_here.txt). Then in segments.json:
+    "character": "name"        appears in a corner over the clip (movie / show / doc footage)
+    "commentary": true         with no footage = solo scene: centered on a background (char_bg: #hex / image / video)
+    char_pos  bottom-right|bottom-left|bottom-center|center|middle|left|right|top-left|top-right
+    char_layout corner|solo   char_pose  char_anim talk|breathe|bob|float|sway|shake|none (combine: talk+sway)
+    char_enter / char_exit slide|pop|fade|none   char_scale 0.46   char_flip   char_outline   char_shadow
+  Project defaults in project.json "character": {"default": "name", "auto": "off|commentary|all"} and config.json "character".
+  The "talk" pose (mouth open) opens and closes with the voice-over; without one the character bounces with it.
+  Each character segment becomes a transparent video clip in char_layers\ = its own track (one track per character) in Premiere and
+  VideoPad, so you can still move / scale / delete it there. mp4 (menu 5), VideoPad simple and TikTok have
+  it baked into the picture. 2d_characters.bat checks the library and writes characters\_preview.png.
+  Layer files are big (qtrle). config.json character.codec "png" halves them, "prores" is smallest (not VideoPad).
 
 FOOTAGE FITTING
   Every clip is cut to EXACTLY its voice-over length (longer footage: end cut off; shorter: last frame held).

@@ -44,6 +44,18 @@ OPTIONAL FIELDS (leave out what you don't need - missing = old behaviour)
 - speed       Kokoro / Chatterbox / Pocket TTS only: speaking-speed multiplier for THIS segment (1.0 = normal, 0.85 = slower for dramatic
                or emotional beats, 1.15 = faster for action / jokes). Range 0.6-1.4. Leave out when normal.
 
+CHARACTER ANIMATION (only when I list characters or set "character" in my project settings - otherwise leave these out)
+I may give you character names (PNG cut-outs). Use them on commentary / reaction beats, not on every segment.
+- character    one of MY listed names. Over movie / show / doc footage it sits in a corner of the clip.
+- commentary   true on a beat where YOU talk to the viewer with no clip worth showing. With no src / image on that
+               segment it becomes a SOLO scene: the character centered on a background.
+- char_pos     bottom-right (default) | bottom-left | bottom-center | center | left | right | top-left | top-right
+               (alternate sides between speakers / moods; keep the same side while one character keeps talking)
+- char_pose    only a pose name I listed (e.g. "angry", "shocked") to match the emotion of that line
+- char_bg      solo scenes only: "#rrggbb" or a file name I listed in characters/backgrounds
+- char_anim    talk (default) | shake (anger / panic) | float (dreamy) | sway | bob | none
+Keep the same character and position over consecutive segments; it then stays on screen without re-entering.
+
 GENERAL RULES
 - Output valid JSON only (no comments, no trailing commas). ids unique across the whole file. src_end after src_start.
 - Timestamps are HH:MM:SS.mmm. Read timestamps from the real .srt file, NOT from any pasted transcript text.

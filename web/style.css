@@ -200,3 +200,17 @@ a { color: var(--accent); }
 label.chk { display: flex; align-items: center; gap: 8px; margin-top: 12px; cursor: pointer; }
 label.chk input { width: auto; margin: 0; }
 .card code { background: rgba(127,127,127,.18); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+/* characters */
+.char-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.charcard { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+.charcard .cutout { height: 170px; border-radius: 8px; display: grid; place-items: center; overflow: hidden;
+  background: repeating-conic-gradient(#2a323e 0% 25%, #1e242e 0% 50%) 50% / 18px 18px; }
+.charcard .cutout img { width: 100%; height: 100%; object-fit: contain; }
+.charcard .cname { font-weight: 600; margin: 8px 0 4px; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--panel2); border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; }
+.chip a { color: var(--red); text-decoration: none; margin-left: 4px; }
+.charbox { margin-top: 10px; border: 1px dashed var(--border); border-radius: 8px; padding: 6px 10px 10px; }
+.charbox summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }

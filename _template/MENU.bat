@@ -24,6 +24,7 @@ if "%RECAP%%COMIC%"=="00" echo   13 Collect footage            (guided: paste li
 if "%RECAP%%COMIC%"=="00" echo   12 Index footage              (contact sheets for every clip)
 if "%COMIC%"=="0" echo   2  Make contact sheets        (segments marked need_visual)
 echo.
+echo   22 Check characters          (PNG cut-outs in characters\ + preview picture)
 echo   15 Export narration sheet     (review / edit text + tags in Excel)
 echo   16 Import narration edits
 echo   14 Preview voice              (first 3 segments, before spending credits)
@@ -69,5 +70,6 @@ if "%C%"=="18" call "%~dp0_run.bat" demo
 if "%C%"=="19" call "%~dp0_run.bat" videopad
 if "%C%"=="20" call "%~dp0_run.bat" videopad --simple
 if "%C%"=="21" call "%~dp0_run.bat" comic
+if "%C%"=="22" call "%~dp0_run.bat" characters
 if "%C%"=="0" exit /b
 goto menu

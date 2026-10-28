@@ -121,6 +121,7 @@ DEFAULT_PROJECT = {
     "module": "movie_recap", "topic": "", "style": "retell", "target_length": "",
     "platform": "youtube", "tts_mode": "plain", "voice_card": "",
     "fact_check": "off", "music": False, "captions": True, "reading": "ltr",
+    "character": {"default": "", "auto": "off"},
 }
 DEFAULT_CONFIG = {
     "fps": 24, "width": 1920, "height": 1080, "sample_rate": 48000,
@@ -141,10 +142,18 @@ DEFAULT_CONFIG = {
     },
     "tiktok": {"width": 1080, "height": 1920, "fps": 30},
     "subtitles": {"max_chars_per_line": 42, "max_lines": 2},
+    "character": {
+        "corner_pos": "bottom-right", "corner_scale": 0.46, "solo_pos": "center", "solo_scale": 0.80,
+        "max_width": 0.40, "solo_max_width": 0.80, "margin": 0.03, "idle": "talk",
+        "enter": "slide", "exit": "slide", "solo_enter": "pop", "solo_exit": "fade",
+        "enter_sec": 0.35, "exit_sec": 0.25, "shadow": True, "outline": "",
+        "solo_bg": "gradient:#1b2030,#43305f", "mouth_threshold": 0.25, "codec": "qtrle",
+    },
 }
 
-FOLDERS = ["footage", "images", "music", "sheets", "subs", "comic_review", "audio", "audio_preview",
+FOLDERS = ["footage", "images", "music", "characters", "sheets", "subs", "comic_review", "audio", "audio_preview",
            "clips", "gfx", "audio_trim"]
+CHAR_EXTS = (".png", ".webp")
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -491,12 +500,44 @@ def project_detail(name):
         "segment_counts": {"youtube": len(yt) if isinstance(yt, list) else 0, "tiktok": n_tt},
         "outputs": outputs,
         "files": files,
+        "characters": character_library(d),
         "root_media": root_media,
         "prompt": prompt,
         "state": state,
         "shots": shots,
         "engine_current": engine_is_current(name),
     }
+
+
+def character_library(d):
+    """characters/ -> [{name, facing, poses: [{pose, file}]}] for the Characters tab (mirrors recap.py)."""
+    base = os.path.join(d, "characters")
+    out = {}
+    if not os.path.isdir(base):
+        return []
+    for entry in sorted(os.listdir(base), key=lambda s: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]):
+        if entry.startswith(("_", ".")) or entry.lower() == "backgrounds":
+            continue
+        p = os.path.join(base, entry)
+        if os.path.isfile(p) and entry.lower().endswith(CHAR_EXTS):
+            nm, pose = os.path.splitext(entry)[0], "default"
+            if "__" in nm:
+                nm, pose = nm.split("__", 1)
+                pose = pose.lower().replace(" ", "_") or "default"
+            ch = out.setdefault(nm.lower(), {"name": nm, "facing": "", "poses": []})
+            if not any(x["pose"] == pose for x in ch["poses"]):
+                ch["poses"].append({"pose": pose, "file": "characters/" + entry})
+        elif os.path.isdir(p):
+            ch = out.setdefault(entry.lower(), {"name": entry, "facing": "", "poses": []})
+            for f in sorted(os.listdir(p)):
+                if f.lower().endswith(CHAR_EXTS) and not f.startswith(("_", ".")):
+                    pose = os.path.splitext(f)[0].lower().replace(" ", "_")
+                    if not any(x["pose"] == pose for x in ch["poses"]):
+                        ch["poses"].append({"pose": pose, "file": "characters/%s/%s" % (entry, f)})
+            meta = read_json(os.path.join(p, "character.json"), {})
+            if isinstance(meta, dict):
+                ch["facing"] = str(meta.get("facing") or "")
+    return [c for c in out.values() if c["poses"]]
 
 
 def load_segments(name):
@@ -510,7 +551,7 @@ STEP_LABELS = {"init": "Project setup", "subs": "Extract subtitles", "index": "I
                "sheets": "Contact sheets", "comic": "Import comic", "collect": "Collect footage", "collect_one": "Download / attach shot",
                "tts": "Voice-over", "review": "Review sheet", "premiere": "Build Premiere XML", "videopad": "Build VideoPad project",
                "video": "Build full video", "srt": "Build subtitles", "tiktok": "Build TikTok",
-               "check": "Status check", "demo": "Demo media"}
+               "check": "Status check", "demo": "Demo media", "characters": "Check characters"}
 PROCS = {}           # job id -> subprocess.Popen (kept out of the JSON payload)
 PROGRESS_PREFIX = "@@PROGRESS "
 
@@ -988,6 +1029,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/([^/]+)/upload$", path)
         if m:
             return self.api_upload(m.group(1), qs)
+        m = re.match(r"^/api/projects/([^/]+)/character$", path)
+        if m:
+            return self.api_character(m.group(1), self.read_json_body())
         m = re.match(r"^/api/projects/([^/]+)/download$", path)
         if m:
             return self.api_collect(m.group(1), self.read_json_body())
@@ -1028,7 +1072,7 @@ class Handler(BaseHTTPRequestHandler):
                     os.remove(os.path.join(dest, f))
                 except OSError:
                     pass
-        for d in ("footage", "images", "music"):
+        for d in ("footage", "images", "music", "characters"):
             os.makedirs(os.path.join(dest, d), exist_ok=True)
         return self.send_json(project_detail(name))
 
@@ -1091,7 +1135,7 @@ class Handler(BaseHTTPRequestHandler):
         ensure_engine(name)
         step = (body or {}).get("step")
         if step not in ("init", "subs", "index", "sheets", "comic", "collect", "tts", "review",
-                        "premiere", "videopad", "video", "srt", "tiktok", "check", "demo"):
+                        "premiere", "videopad", "video", "srt", "tiktok", "check", "demo", "characters"):
             return self.send_json({"error": "unknown step: %s" % step}, 400)
         flags = (body or {}).get("flags") or {}
         args = []
@@ -1147,9 +1191,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self.require_project(name):
             return
         folder = q1(qs, "folder", "footage")
-        if folder not in ("footage", "images", "music", "root"):
-            return self.send_json({"error": "folder must be footage, images, music or root"}, 400)
+        if folder not in ("footage", "images", "music", "characters", "root"):
+            return self.send_json({"error": "folder must be footage, images, music, characters or root"}, 400)
         fname = os.path.basename(q1(qs, "name", "") or "upload.bin")
+        if folder == "characters":
+            return self.api_character_upload(name, qs, fname)
         attach_id = q1(qs, "id", "")
         d = project_dir(name)
         if not attach_id:
@@ -1172,6 +1218,78 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             return self.send_json({"ok": rc == 0, "stdout": out[-1500:], "stderr": err[-1500:]})
+
+    def api_character_upload(self, name, qs, fname):
+        """A cut-out for the character library: characters/<sub>/<fname> (sub = the character, fname = pose.png)."""
+        d = project_dir(name)
+        if not fname.lower().endswith(CHAR_EXTS):
+            return self.send_json({"error": "Characters must be transparent .png (or .webp) files."}, 400)
+        sub = safe_name(q1(qs, "sub", ""))
+        base = os.path.join(d, "characters")
+        os.makedirs(base, exist_ok=True)
+        if not sub:
+            return self._stream_upload(d, "characters", safe_name(fname) or "character.png")
+        folder = os.path.join(base, sub)
+        flat = [os.path.join(base, sub + e) for e in CHAR_EXTS if os.path.isfile(os.path.join(base, sub + e))]
+        if flat and not os.path.isdir(folder):          # a single-file character gets its own folder when it gets a pose
+            os.makedirs(folder)
+            shutil.move(flat[0], os.path.join(folder, "default" + os.path.splitext(flat[0])[1]))
+        return self._stream_upload(d, os.path.join("characters", sub), safe_name(fname) or "default.png")
+
+    def api_character(self, name, body):
+        """Delete a pose / a whole character, or set which way its art faces."""
+        if not self.require_project(name):
+            return
+        body = body or {}
+        base = os.path.realpath(os.path.join(project_dir(name), "characters"))
+        ch = safe_name(body.get("name", ""))
+        if not ch or not os.path.isdir(base):
+            return self.send_json({"error": "character name is required."}, 400)
+        action = body.get("action")
+        if action == "facing":
+            folder = os.path.join(base, ch)
+            flat = [os.path.join(base, ch + e) for e in CHAR_EXTS if os.path.isfile(os.path.join(base, ch + e))]
+            if flat and not os.path.isdir(folder):
+                os.makedirs(folder)
+                shutil.move(flat[0], os.path.join(folder, "default" + os.path.splitext(flat[0])[1]))
+            if not os.path.isdir(folder):
+                return self.send_json({"error": "no such character."}, 404)
+            mp = os.path.join(folder, "character.json")
+            meta = read_json(mp, {})
+            meta = meta if isinstance(meta, dict) else {}
+            f = str(body.get("facing") or "")
+            if f in ("left", "right"):
+                meta["facing"] = f
+            else:
+                meta.pop("facing", None)
+            write_json(mp, meta)
+            return self.send_json({"ok": True})
+        if action != "delete":
+            return self.send_json({"error": "unknown action."}, 400)
+        pose = safe_name(body.get("pose", ""))
+        targets = []
+        if pose:
+            for e in CHAR_EXTS:
+                targets += [os.path.join(base, ch, pose + e), os.path.join(base, "%s__%s%s" % (ch, pose, e))]
+                if pose == "default":
+                    targets.append(os.path.join(base, ch + e))
+        else:
+            targets = [os.path.join(base, ch)] + [os.path.join(base, ch + e) for e in CHAR_EXTS]
+            for f in os.listdir(base):
+                if f.lower().startswith(ch.lower() + "__") and f.lower().endswith(CHAR_EXTS):
+                    targets.append(os.path.join(base, f))
+        n = 0
+        for t in targets:
+            full = os.path.realpath(t)
+            if not full.startswith(base + os.sep):
+                continue
+            if os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
+                n += 1
+            elif os.path.isfile(full):
+                os.remove(full)
+                n += 1
+        return self.send_json({"ok": n > 0, "removed": n})
 
     def _stream_upload(self, d, folder, fname):
         """Write the upload to disk in chunks so multi-GB films don't fill memory."""

@@ -17,6 +17,7 @@ Steps:
   video     Cut clips + join into ONE finished mp4   -> recap_final.mp4
   srt       Subtitles (+ on-screen text .srt)        -> recap_subtitles.srt
   tiktok    Build vertical 9:16 TikTok parts         -> tiktok_out/
+  characters  Check characters/ (PNG cut-outs) + make characters/_preview.png
   check     Status report (also writes STATE.md)
   demo      Fill this project with synthetic test media (to test the pipeline / Premiere import)
 """
@@ -147,6 +148,24 @@ DEFAULT_CONFIG = {
         "page_turn": "slide",     # entrance on a new page: slide | fade | pop | cut
         "same_panel_move": "slide",  # next panel on the same page: slide (toward it) | cut
     },
+    "character": {                  # character animation sub-module (PNG cut-outs in characters/)
+        "corner_pos": "bottom-right",  # where the character sits over a clip
+        "corner_scale": 0.46,       # character height / frame height when over a clip
+        "solo_pos": "center",       # solo commentary scene (character on a background)
+        "solo_scale": 0.80,
+        "max_width": 0.40,          # a corner character never takes more than this share of the frame width
+        "solo_max_width": 0.80,
+        "margin": 0.03,             # air between the character and the frame edge
+        "idle": "talk",             # talk | breathe | bob | float | sway | shake | none  (combine with +)
+        "enter": "slide", "exit": "slide",          # over a clip: slide | pop | fade | none
+        "solo_enter": "pop", "solo_exit": "fade",
+        "enter_sec": 0.35, "exit_sec": 0.25,
+        "shadow": True,             # soft drop shadow so the cut-out sits on the footage
+        "outline": "",              # "" = off, "#ffffff" = white sticker outline
+        "solo_bg": "gradient:#1b2030,#43305f",      # #hex | gradient:#a,#b | image/video file name
+        "mouth_threshold": 0.25,    # voice loudness (0-1) that opens the mouth pose
+        "codec": "qtrle",           # layer file: qtrle (works everywhere) | png (smaller) | prores (smallest; not for VideoPad)
+    },
 }
 
 DEFAULT_PROJECT = {
@@ -161,6 +180,7 @@ DEFAULT_PROJECT = {
     "music": False,
     "captions": True,
     "reading": "ltr",           # comic_recap: ltr (western) | rtl (manga)
+    "character": {"default": "", "auto": "off"},   # auto: off | commentary (segments with "commentary": true) | all
 }
 
 
@@ -496,7 +516,19 @@ def probe_media(path):
 
 def seg_media(seg, default_vid):
     """Decides where a segment's picture comes from.
-    -> {"kind": video|image|slate, "file", "start", "avail", "why"}"""
+    -> {"kind": video|image|slate, "file", "start", "avail", "why"}
+    A solo commentary scene (character in the middle) gets its background instead, with "solo": True."""
+    req = char_request(seg)
+    if req and req["_solo"] == "forced":
+        return char_solo_media(req)
+    m = _seg_media_base(seg, default_vid)
+    if (req and req["_solo"] == "auto" and m["kind"] == "slate"
+            and str(m.get("why", "")).startswith(("no footage yet", "no page/focus"))):
+        return char_solo_media(req)
+    return m
+
+
+def _seg_media_base(seg, default_vid):
     sid = seg.get("id", "?")
     if MODULE == "comic_recap" and any(seg.get(k) is not None for k in ("page", "focus", "panel", "panels")):
         return comic_media(seg)
@@ -2391,12 +2423,14 @@ def render_video_clip(m, frames, W, H, F, out, fill):
     """Video-only clip of EXACTLY `frames` frames. Longer footage is cut at the end,
     shorter footage gets its last frame held (no black, no gap)."""
     total = frames / F
-    use = min(m["avail"], total)
+    loop = bool(m.get("loop"))                     # solo background video: repeat it for as long as the voice runs
+    use = total if loop else min(m["avail"], total)
     info = probe_media(m["file"])
     g = fit_graph(info["w"], info["h"], W, H, fill)
     g += f";[f]fps={F},setsar=1,tpad=stop_mode=clone:stop_duration={total + 1:.3f}[v]"
-    ffrun(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{m['start']:.3f}", "-t", f"{use:.3f}",
-           "-i", m["file"], "-filter_complex", g, "-map", "[v]", "-frames:v", str(frames)] + X264 + [out], out)
+    ffrun(["ffmpeg", "-y", "-loglevel", "error"] + (["-stream_loop", "-1"] if loop else [])
+          + ["-ss", f"{m['start']:.3f}", "-t", f"{use:.3f}",
+             "-i", m["file"], "-filter_complex", g, "-map", "[v]", "-frames:v", str(frames)] + X264 + [out], out)
 
 
 def render_image_clip(m, frames, W, H, F, out):
@@ -2496,9 +2530,745 @@ def keep_audio_volume(seg):
         return float(CFG.get("keep_audio_volume", 0.30))
 
 
-def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, label="clips"):
-    """For every segment that has narration audio: picture clip (+ original audio, + overlay).
-    Returns items in order. render=False only fits the audio (used for .srt)."""
+# ====================================================================
+# CHARACTER ANIMATION  (sub-module - works in every module)
+#
+#   Put transparent PNG cut-outs in characters/:
+#       characters/kratos.png                   one picture
+#       characters/kratos/default.png           or a folder of poses:
+#       characters/kratos/talk.png                 default / talk (mouth open) / angry / ...
+#       characters/kratos__angry.png            (same as a pose file: name__pose.png)
+#       characters/kratos/character.json        optional: {"facing": "left"}   (which way the art looks)
+#   Segment fields (ALL optional - a segment without them gets no character):
+#       "character": "kratos"           (false = none; or an object with the fields below)
+#       "char_pos"     bottom-right | bottom-left | bottom-center | center | middle | left | right |
+#                      top-left | top-right          (default: bottom-right)
+#       "char_layout"  corner (over the clip)  |  solo (character in the middle on a background)
+#       "char_bg"      solo background: #112233 | gradient:#111,#333 | image / video file name
+#       "char_pose"    pose name (file name without .png)
+#       "char_anim"    talk | breathe | bob | float | sway | shake | none  (combine: "talk+sway")
+#       "char_enter" / "char_exit"   slide | pop | fade | none
+#       "char_scale"   character height as a fraction of the frame height (0.46 = 46 %)
+#       "char_flip" true/false/"auto"   "char_outline" true/"#ffffff"   "char_shadow" true/false
+#       "char_x" / "char_y"  exact spot (0-1 of the frame; x = centre, y = feet)
+#       "commentary": true     marks a commentary beat (with project.json character.auto = "commentary"
+#                              the default character appears; with no picture source it becomes a solo scene)
+#   Output: one transparent .mov per segment in char_layers/ = its own video layer
+#       Premiere V2 / VideoPad V2 (graphics move up one track) | mp4, VideoPad-simple, TikTok: baked in
+# ====================================================================
+CHARS_DIR = "characters"
+CHAR_LAYERS_DIR = "char_layers"
+CHAR_BURN_DIR = "char_burn"
+CHAR_IMG_EXTS = (".png", ".webp")
+CHAR_TALK_NAMES = ("talk", "talking", "speak", "speaking", "open", "mouth_open", "mouth")
+CHAR_IDLE_NAMES = ("default", "idle", "neutral", "normal", "base", "closed")
+CHAR_ANIMS = ("talk", "breathe", "bob", "float", "sway", "shake", "none")
+CHAR_APPEAR = ("slide", "pop", "fade", "none")
+CHAR_VERSION = "v1"
+CHAR_CODECS = {                      # how the transparent layer is stored (config character.codec)
+    "qtrle": ["-c:v", "qtrle", "-pix_fmt", "argb"],                                   # safest: same as the graphics layer
+    "png": ["-c:v", "png", "-pix_fmt", "rgba"],                                       # about half the size
+    "prores": ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-qscale:v", "12"],  # smallest for painted art
+}
+CHAR_FLAT = ("pos", "pose", "scale", "anim", "enter", "exit", "flip", "layout", "bg",
+             "outline", "shadow", "x", "y")
+CHAR_PICTURE_KEYS = ("src", "src_start", "image", "page", "focus", "panel", "panels")
+CHAR_POS_ALIASES = {
+    "bottom-right": ("r", "b"), "br": ("r", "b"), "corner": ("r", "b"), "right-bottom": ("r", "b"),
+    "bottom-left": ("l", "b"), "bl": ("l", "b"), "left-bottom": ("l", "b"),
+    "bottom-center": ("c", "b"), "bottom-centre": ("c", "b"), "bc": ("c", "b"), "bottom": ("c", "b"),
+    "center": ("c", "b"), "centre": ("c", "b"),
+    "middle": ("c", "m"), "middle-center": ("c", "m"),
+    "left": ("l", "m"), "mid-left": ("l", "m"), "middle-left": ("l", "m"),
+    "right": ("r", "m"), "mid-right": ("r", "m"), "middle-right": ("r", "m"),
+    "top-left": ("l", "t"), "tl": ("l", "t"), "top-right": ("r", "t"), "tr": ("r", "t"),
+    "top-center": ("c", "t"), "top-centre": ("c", "t"), "top": ("c", "t"),
+}
+CHAR_FRAME = [WIDTH, HEIGHT]          # size of the frame being built (solo backgrounds are made to match)
+_CHAR_LIB = {}
+_CHAR_WARNED = set()
+_SPRITES = {}
+
+
+def chcfg():
+    c = CFG.get("character")
+    return c if isinstance(c, dict) else {}
+
+
+def char_project():
+    c = PROJECT.get("character")
+    if isinstance(c, str):
+        c = {"default": c}
+    return c if isinstance(c, dict) else {}
+
+
+def char_warn(key, msg):
+    if key not in _CHAR_WARNED:
+        _CHAR_WARNED.add(key)
+        print(f"[!] {msg}")
+
+
+def char_pil():
+    try:
+        from PIL import Image  # noqa
+        return True
+    except ImportError:
+        char_warn("pil", "Character animation needs Pillow - run SETUP.bat again (or: pip install pillow). "
+                         "Continuing without characters.")
+        return False
+
+
+def _hex(c, default=(255, 255, 255)):
+    c = str(c or "").strip().lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    try:
+        return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return default
+
+
+def _truthy(v, default=False):
+    if v is None or v == "":
+        return default
+    if isinstance(v, str):
+        return v.strip().lower() not in ("0", "false", "no", "off", "none")
+    return bool(v)
+
+
+# ---- what a segment asks for (file-free, cheap) ----
+def char_request(seg):
+    """-> dict of the segment's character wishes, or None. Reads fields only, never files."""
+    if not isinstance(seg, dict):
+        return None
+    c = seg.get("character")
+    if c is False or (isinstance(c, str) and c.strip().lower() in ("none", "off", "no", "false")):
+        return None
+    req = {}
+    if isinstance(c, dict):
+        req.update({k: v for k, v in c.items() if v not in (None, "")})
+        if "position" in req and "pos" not in req:
+            req["pos"] = req.pop("position")
+    elif isinstance(c, str) and c.strip():
+        req["name"] = c.strip()
+    for k in CHAR_FLAT:
+        v = seg.get("char_" + k)
+        if v not in (None, ""):
+            req[k] = v
+    if "layout" not in req and seg.get("layout") in ("solo", "corner"):
+        req["layout"] = seg["layout"]
+    explicit = bool(req) or c is True
+    if not req.get("name"):
+        pc = char_project()
+        default = str(pc.get("default") or "").strip()
+        auto = str(pc.get("auto") or "off").lower()
+        if default and (explicit or auto == "all" or (auto == "commentary" and seg.get("commentary"))):
+            req["name"] = default
+    if not req.get("name"):
+        return None
+    layout = str(req.get("layout") or "").lower()
+    if layout not in ("solo", "corner"):
+        layout = ""
+    forced = layout == "solo" or (bool(req.get("bg")) and layout != "corner")
+    no_picture = not any(seg.get(k) not in (None, "", False) for k in CHAR_PICTURE_KEYS)
+    auto_solo = (not layout) and bool(seg.get("commentary")) and no_picture
+    req["layout"] = layout
+    req["_solo"] = "forced" if forced else ("auto" if auto_solo else "")
+    return req
+
+
+def char_req_key(req):
+    return json.dumps(req, sort_keys=True, default=str) if req else ""
+
+
+# ---- solo background ----
+def char_bg_file(bg):
+    """'#202733' | 'gradient' | 'gradient:#1d2230,#43305f'  ->  PNG the size of the frame (cached)."""
+    from PIL import Image, ImageOps
+    W, H = CHAR_FRAME
+    spec = str(bg or "gradient").strip()
+    low = spec.lower()
+    if low.startswith("#"):
+        c1 = c2 = _hex(spec)
+    else:
+        parts = spec.split(":", 1)[1].split(",") if ":" in spec else []
+        base = str(chcfg().get("solo_bg") or "gradient:#1b2030,#43305f")
+        dflt = base.split(":", 1)[1].split(",") if ":" in base else ["#1b2030", "#43305f"]
+        c1 = _hex(parts[0] if parts else dflt[0])
+        c2 = _hex(parts[1] if len(parts) > 1 else (dflt[1] if len(dflt) > 1 else dflt[0]))
+    name = f"_solo_bg_{h8(f'{c1}{c2}{W}x{H}')}.png"
+    os.makedirs(GFX_DIR, exist_ok=True)
+    path = os.path.join(GFX_DIR, name)
+    if os.path.exists(path):
+        return path
+    grad = Image.linear_gradient("L").resize((W, H), Image.BILINEAR)
+    img = ImageOps.colorize(grad, black=c1, white=c2).convert("RGB")
+    if c1 != c2:                                    # soft light in the middle so the character pops
+        glow = Image.radial_gradient("L").resize((W, H), Image.BILINEAR)
+        glow = ImageOps.invert(glow).point(lambda v: int(v * 0.16))
+        img = Image.composite(Image.new("RGB", (W, H), (255, 255, 255)), img, glow)
+    img.save(path)
+    return path
+
+
+def char_solo_media(req):
+    """Picture for a solo commentary scene (character on a background) -> a seg_media() dict."""
+    bg = str(req.get("bg") or chcfg().get("solo_bg") or "gradient").strip()
+    low = bg.lower()
+    f = None
+    if not (low.startswith("#") or low.startswith("gradient")):
+        f = find_in(bg, IMAGES_DIR, os.path.join(CHARS_DIR, "backgrounds"), FOOTAGE_DIR, ".")
+        if not f:
+            char_warn("bg:" + bg, f"solo background '{bg}' not found (images/, characters/backgrounds/, footage/) "
+                                  "- using the gradient.")
+    if f and f.lower().endswith(VIDEO_EXTS):
+        return {"kind": "video", "file": f, "start": 0.0, "avail": probe_media(f)["dur"], "solo": True,
+                "loop": True}
+    if f:
+        return {"kind": "image", "file": f, "start": 0.0, "avail": 0.0, "solo": True}
+    if not char_pil():
+        return {"kind": "slate", "why": "solo scene needs Pillow for its background"}
+    return {"kind": "image", "file": char_bg_file(bg), "start": 0.0, "avail": 0.0, "solo": True}
+
+
+# ---- the character library ----
+def char_library(refresh=False):
+    """-> {lowercase name: {"name", "poses": {pose: path}, "default", "talk", "meta"}}"""
+    global _CHAR_LIB
+    if _CHAR_LIB and not refresh:
+        return _CHAR_LIB
+    lib = {}
+    if os.path.isdir(CHARS_DIR):
+        for entry in sorted(os.listdir(CHARS_DIR), key=natural_key):
+            if entry.startswith(("_", ".")) or entry.lower() == "backgrounds":
+                continue
+            p = os.path.join(CHARS_DIR, entry)
+            if os.path.isfile(p) and entry.lower().endswith(CHAR_IMG_EXTS):
+                nm = os.path.splitext(entry)[0]
+                pose = "default"
+                if "__" in nm:                              # kratos__angry.png = pose "angry" of "kratos"
+                    nm, pose = nm.split("__", 1)
+                    pose = pose.lower().replace(" ", "_") or "default"
+                ch = lib.setdefault(nm.lower(), {"name": nm, "poses": {}, "meta": {}})
+                ch["poses"].setdefault(pose, p)
+            elif os.path.isdir(p):
+                ch = lib.setdefault(entry.lower(), {"name": entry, "poses": {}, "meta": {}})
+                for f in sorted(os.listdir(p), key=natural_key):
+                    if f.lower().endswith(CHAR_IMG_EXTS) and not f.startswith(("_", ".")):
+                        ch["poses"][os.path.splitext(f)[0].lower().replace(" ", "_")] = os.path.join(p, f)
+                mp = os.path.join(p, "character.json")
+                if os.path.isfile(mp):
+                    try:
+                        with open(mp, "r", encoding="utf-8") as fh:
+                            ch["meta"] = json.load(fh) or {}
+                    except Exception as e:
+                        char_warn("meta:" + p, f"{mp} is not valid JSON ({e}) - ignored.")
+    for key in [k for k, v in lib.items() if not v["poses"]]:
+        del lib[key]
+    for ch in lib.values():
+        poses = ch["poses"]
+        ch["talk"] = next((n for n in CHAR_TALK_NAMES if n in poses), None)
+        ch["default"] = (next((n for n in CHAR_IDLE_NAMES if n in poses), None)
+                         or next((n for n in sorted(poses) if n != ch["talk"] and not n.endswith(("_talk", "_open"))), None)
+                         or next(iter(poses)))
+    _CHAR_LIB = lib
+    return lib
+
+
+def char_find(name):
+    lib = char_library()
+    n = str(name or "").strip().lower()
+    for cand in (n, n.replace(" ", "_"), n.replace(" ", ""), n.replace("-", "_")):
+        if cand in lib:
+            return lib[cand]
+    return None
+
+
+def char_pos_of(value, default):
+    key = str(value or default).strip().lower().replace("_", "-").replace(" ", "-")
+    return CHAR_POS_ALIASES.get(key) or CHAR_POS_ALIASES.get(str(default).lower()) or ("r", "b")
+
+
+def char_list(v, allowed, default):
+    items = [x for x in re.split(r"[+,/ ]+", str(v if v not in (None, "") else default).lower()) if x]
+    items = [x for x in items if x in allowed]
+    if "none" in items:
+        return []
+    return items or ([x for x in re.split(r"[+,/ ]+", str(default).lower()) if x in allowed and x != "none"])
+
+
+def char_resolve(req, layout, sid="?"):
+    """Segment wishes + project defaults + library -> a complete, JSON-able spec (or None)."""
+    ch = char_find(req.get("name"))
+    if not ch:
+        have = ", ".join(sorted(v["name"] for v in char_library().values())) or "none yet"
+        char_warn("nochar:" + str(req.get("name")).lower(),
+                  f"{sid}: character '{req.get('name')}' not found in {CHARS_DIR}/ (have: {have}) - skipped.")
+        return None
+    cfg = chcfg()
+    solo = layout == "solo"
+    poses = ch["poses"]
+    pose = str(req.get("pose") or "").strip().lower().replace(" ", "_")
+    pose = os.path.splitext(pose)[0] if pose.endswith(CHAR_IMG_EXTS) else pose
+    if pose and pose not in poses:
+        char_warn(f"nopose:{ch['name']}:{pose}",
+                  f"{sid}: {ch['name']} has no pose '{pose}' (poses: {', '.join(sorted(poses))}) - using the default.")
+        pose = ""
+    pose = pose or ch["default"]
+    talk = next((c for c in (f"{pose}_talk", f"{pose}_open", f"talk_{pose}", f"{pose}_talking") if c in poses), None)
+    if not talk and pose == ch["default"]:
+        talk = ch["talk"]
+    hx, vy = char_pos_of(req.get("pos"), cfg.get("solo_pos", "center") if solo else cfg.get("corner_pos", "bottom-right"))
+    try:
+        scale = float(req.get("scale") or (cfg.get("solo_scale", 0.80) if solo else cfg.get("corner_scale", 0.46)))
+    except (TypeError, ValueError):
+        scale = 0.46
+    scale = max(0.05, min(1.6, scale))
+    enter = str(req.get("enter") or cfg.get("solo_enter" if solo else "enter", "pop" if solo else "slide")).lower()
+    leave = str(req.get("exit") or cfg.get("solo_exit" if solo else "exit", "fade" if solo else "slide")).lower()
+    facing = str((ch["meta"] or {}).get("facing") or "").lower()
+    flip_req = req.get("flip")
+    if str(flip_req).lower() in ("true", "1", "yes"):
+        flip = True
+    elif str(flip_req).lower() in ("false", "0", "no"):
+        flip = False
+    else:                                              # auto: face the middle of the screen
+        want = "left" if hx == "r" else ("right" if hx == "l" else "")
+        flip = bool(facing in ("left", "right") and want and facing != want)
+    outline = req.get("outline", cfg.get("outline", ""))
+    outline = "#ffffff" if outline is True or str(outline).lower() in ("true", "yes", "on") else (
+        "" if not outline or str(outline).lower() in ("false", "no", "off", "none") else str(outline))
+    spec = {
+        "name": ch["name"], "pose": pose, "file": poses[pose], "talk_file": poses.get(talk) if talk else None,
+        "layout": layout, "hx": hx, "vy": vy, "scale": scale,
+        "max_w": float(cfg.get("solo_max_width", 0.80) if solo else cfg.get("max_width", 0.40)),
+        "anims": char_list(req.get("anim"), CHAR_ANIMS, cfg.get("idle", "talk")),
+        "enter": enter if enter in CHAR_APPEAR else "none", "exit": leave if leave in CHAR_APPEAR else "none",
+        "enter_sec": float(cfg.get("enter_sec", 0.35)), "exit_sec": float(cfg.get("exit_sec", 0.25)),
+        "flip": flip, "outline": outline, "shadow": _truthy(req.get("shadow"), _truthy(cfg.get("shadow"), True)),
+        "margin": float(cfg.get("margin", 0.03)), "thr": float(cfg.get("mouth_threshold", 0.25)),
+        "x": None, "y": None,
+    }
+    for k in ("x", "y"):
+        try:
+            if req.get(k) not in (None, ""):
+                spec[k] = max(-0.5, min(1.5, float(req[k])))
+        except (TypeError, ValueError):
+            pass
+    return spec
+
+
+# ---- sprites ----
+def _alpha_bbox(im):
+    return im.getchannel("A").point(lambda v: 255 if v > 6 else 0).getbbox()
+
+
+def char_has_alpha(path):
+    from PIL import Image
+    im = Image.open(path).convert("RGBA")
+    lo, hi = im.getchannel("A").getextrema()
+    return lo < 250 and hi > 0
+
+
+def char_aspect(path):
+    from PIL import Image
+    key = ("asp", file_sig(path))
+    if key not in _SPRITES:
+        bb = _alpha_bbox(Image.open(path).convert("RGBA"))
+        _SPRITES[key] = ((bb[2] - bb[0]) / max(1, bb[3] - bb[1])) if bb else 1.0
+    return _SPRITES[key]
+
+
+def char_sprites(files, th, flip, outline, shadow):
+    """Poses -> aligned, scaled, outlined, shadowed sprites [{'pm', 'w', 'h', 'pad'}] (cached)."""
+    from PIL import Image, ImageChops, ImageFilter
+    key = (tuple(file_sig(f) for f in files), int(th), flip, outline, shadow)
+    if key in _SPRITES:
+        return _SPRITES[key]
+    RES = getattr(Image, "Resampling", Image)
+    ims = [Image.open(f).convert("RGBA") for f in files]
+    boxes = [_alpha_bbox(im) for im in ims]
+    if not all(boxes):
+        raise RuntimeError(f"{os.path.basename(files[boxes.index(None)])} is completely transparent")
+    if len({im.size for im in ims}) == 1:           # same canvas: crop all to ONE box so poses stay aligned
+        u = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+        ims = [im.crop(u) for im in ims]
+    else:                                           # different canvases: line the poses up bottom-centre
+        crops = [im.crop(b) for im, b in zip(ims, boxes)]
+        cw, chh = max(c.width for c in crops), max(c.height for c in crops)
+        ims = []
+        for c in crops:
+            cell = Image.new("RGBA", (cw, chh), (0, 0, 0, 0))
+            cell.paste(c, ((cw - c.width) // 2, chh - c.height))
+            ims.append(cell)
+    th = max(8, int(th))
+    tw = max(8, round(ims[0].width * th / ims[0].height))
+    pad = max(10, int(th * 0.10))
+    out = []
+    for im in ims:
+        if flip:
+            im = im.transpose(getattr(Image, "Transpose", Image).FLIP_LEFT_RIGHT)
+        spr = im.convert("RGBa").resize((tw, th), RES.LANCZOS).convert("RGBA")
+        size = (tw + 2 * pad, th + 2 * pad)
+        body = Image.new("RGBA", size, (0, 0, 0, 0))
+        if outline:
+            ap = Image.new("L", size, 0)
+            ap.paste(spr.getchannel("A"), (pad, pad))
+            for _ in range(max(2, round(th * 0.010))):
+                ap = ap.filter(ImageFilter.MaxFilter(3))
+            ap = ap.filter(ImageFilter.GaussianBlur(0.7)).point(lambda v: min(255, v * 2))
+            ring = Image.new("RGBA", size, _hex(outline) + (0,))
+            ring.putalpha(ap)
+            body = Image.alpha_composite(body, ring)
+        layer = Image.new("RGBA", size, (0, 0, 0, 0))
+        layer.paste(spr, (pad, pad))
+        body = Image.alpha_composite(body, layer)
+        if shadow:
+            sa = ImageChops.offset(body.getchannel("A"), int(th * 0.010), int(th * 0.016))
+            sa = sa.filter(ImageFilter.GaussianBlur(max(2, th * 0.018))).point(lambda v: int(v * 0.42))
+            sh = Image.new("RGBA", size, (0, 0, 0, 0))
+            sh.putalpha(sa)
+            body = Image.alpha_composite(sh, body)
+        out.append({"pm": body.convert("RGBa"), "w": tw, "h": th, "pad": pad})
+    _SPRITES[key] = out
+    return out
+
+
+# ---- the voice drives the mouth ----
+def voice_envelope(wav, frames, fps):
+    """Loudness per video frame, 0..1 (smoothed, relative to this clip's own peaks)."""
+    from array import array
+    try:
+        with wave.open(wav, "rb") as w:
+            ch, sr, sw = w.getnchannels(), w.getframerate(), w.getsampwidth()
+            raw = w.readframes(w.getnframes())
+        if sw != 2:
+            return [0.0] * frames
+        a = array("h")
+        a.frombytes(raw[: len(raw) // 2 * 2])
+        if sys.byteorder == "big":
+            a.byteswap()
+        per = max(1, int(sr / fps))
+        vals = []
+        for f in range(frames):
+            seg = a[f * per * ch:(f + 1) * per * ch:ch * 3]
+            vals.append(math.sqrt(sum(v * v for v in seg) / len(seg)) if len(seg) else 0.0)
+    except Exception:
+        return [0.0] * frames
+    nz = sorted(v for v in vals if v > 1)
+    ref = nz[int(len(nz) * 0.9)] if nz else 0
+    if ref < 150:
+        return [0.0] * frames
+    env, prev = [], 0.0
+    for v in vals:
+        cur = min(1.0, v / ref)
+        prev = max(cur, prev * 0.55)                # quick attack, short release
+        env.append(prev)
+    return env
+
+
+def mouth_states(env, thr):
+    """Open / closed per frame; blips shorter than 2 frames are ignored so the mouth doesn't flicker."""
+    st = [e > thr for e in env]
+    i = 0
+    while i < len(st):
+        j = i
+        while j < len(st) and st[j] == st[i]:
+            j += 1
+        if j - i < 2 and i > 0:
+            for k in range(i, j):
+                st[k] = st[i - 1]
+        i = j
+    return st
+
+
+def _ease_out_cubic(x):
+    return 1 - (1 - x) ** 3
+
+
+def _ease_in_cubic(x):
+    return x ** 3
+
+
+def _ease_out_back(x):
+    c1 = 1.70158
+    c3 = c1 + 1
+    return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2
+
+
+class CharPlayer:
+    """Draws one character frame by frame (used for the video layers and for the preview)."""
+
+    def __init__(self, spec, W, H, F, frames, env=None, phase=0, enter=True, leave=True):
+        from PIL import Image
+        self.Image = Image
+        self.RES = getattr(Image, "Resampling", Image)
+        self.spec, self.W, self.H, self.F, self.frames, self.phase = spec, W, H, F, frames, phase
+        self.env = env or []
+        files = [spec["file"]] + ([spec["talk_file"]] if spec.get("talk_file") else [])
+        ref = min(H, 0.9 * W)                        # tall (9:16) frames: size the character off the width
+        th = min(spec["scale"] * ref, spec["max_w"] * W / max(0.05, char_aspect(spec["file"])))
+        self.sprites = char_sprites(files, th, spec["flip"], spec["outline"], spec["shadow"])
+        s0 = self.sprites[0]
+        self.sw, self.sh, self.pad = s0["w"], s0["h"], s0["pad"]
+        self.mouth = mouth_states(self.env, spec["thr"]) if len(self.sprites) > 1 and self.env else []
+        m = spec["margin"] * H
+        hx, vy = spec["hx"], spec["vy"]
+        self.cx = (m + self.sw / 2) if hx == "l" else ((W - m - self.sw / 2) if hx == "r" else W / 2)
+        self.base = (m + self.sh) if vy == "t" else ((H / 2 + self.sh / 2) if vy == "m" else H)
+        if spec.get("x") is not None:
+            self.cx = spec["x"] * W
+        if spec.get("y") is not None:
+            self.base = spec["y"] * H
+        n_in = int(round(spec["enter_sec"] * F)) if enter and spec["enter"] != "none" else 0
+        n_out = int(round(spec["exit_sec"] * F)) if leave and spec["exit"] != "none" else 0
+        cap = max(0, frames // 2)
+        self.n_in, self.n_out = min(n_in, cap), min(n_out, cap)
+        self.blank = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+
+    # -- idle motion: scale, rotation, x / y offset (pixels, y positive = up)
+    def idle(self, f, env):
+        sp, W, H = self.spec, self.W, self.H
+        t = (f + self.phase) / self.F
+        k = sp["anims"]
+        s, rot, dx, dy = 1.0, 0.0, 0.0, 0.0
+        if "talk" in k or "breathe" in k:
+            s *= 1 + 0.012 * math.sin(2 * math.pi * t / 3.4)
+        if "talk" in k:
+            s *= 1 + 0.030 * env
+            dy += 0.010 * H * env
+        if "bob" in k:
+            dy += 0.014 * H * (1 - math.cos(2 * math.pi * t / 1.15)) / 2
+        if "float" in k:
+            dy += 0.028 * H * (1 - math.cos(2 * math.pi * t / 3.2)) / 2
+            dx += 0.008 * W * math.sin(2 * math.pi * t / 4.3)
+        if "sway" in k:
+            rot += 2.2 * math.sin(2 * math.pi * t / 2.6)
+        if "shake" in k:
+            n = f + self.phase
+            r1 = math.modf(abs(math.sin(n * 12.9898) * 43758.5453))[0] - 0.5
+            r2 = math.modf(abs(math.sin(n * 78.233) * 12345.6789))[0] - 0.5
+            dx += r1 * 0.012 * W
+            rot += r2 * 2.0
+        return s, rot, dx, dy
+
+    # -- entrance / exit: offset (x, y px, y down), scale, opacity
+    def appear(self, kind, p, entering):
+        sp, W, H = self.spec, self.W, self.H
+        if kind == "none":
+            return 0.0, 0.0, 1.0, 1.0
+        if kind == "fade":
+            return 0.0, 0.0, 1.0, p if entering else p
+        if kind == "pop":
+            if entering:
+                return 0.0, 0.0, max(0.02, _ease_out_back(p)), min(1.0, p * 3)
+            return 0.0, 0.0, max(0.02, p), p
+        e = _ease_out_cubic(p) if entering else p       # slide
+        hx = sp["hx"]
+        if hx == "r":
+            return (1 - e) * (W - (self.cx - self.sw / 2) + self.pad), 0.0, 1.0, 1.0
+        if hx == "l":
+            return -(1 - e) * ((self.cx + self.sw / 2) + self.pad), 0.0, 1.0, 1.0
+        return 0.0, (1 - e) * (H - (self.base - self.sh) + self.pad), 1.0, 1.0
+
+    def frame(self, f):
+        env = self.env[f] if f < len(self.env) else 0.0
+        s, rot, dx, dy = self.idle(f, env)
+        ox = oy = 0.0
+        alpha, es = 1.0, 1.0
+        if self.n_in and f < self.n_in:
+            p = (f + 1) / self.n_in
+            ox, oy, es, alpha = self.appear(self.spec["enter"], p, True)
+        left = self.frames - 1 - f
+        if self.n_out and left < self.n_out:
+            q = (left + 0.0) / self.n_out                  # 1 -> 0 over the last frames
+            ex = _ease_in_cubic(q) if self.spec["exit"] == "slide" else q
+            ox2, oy2, es2, a2 = self.appear(self.spec["exit"], ex, False)
+            ox, oy, es, alpha = ox + ox2, oy + oy2, es * es2, alpha * a2
+        idx = 1 if (self.mouth and f < len(self.mouth) and self.mouth[f]) else 0
+        spr = self.sprites[min(idx, len(self.sprites) - 1)]["pm"]
+        sc = s * es
+        ax, ay = self.pad + self.sw / 2, self.pad + self.sh      # feet, centre
+        if abs(sc - 1.0) > 0.002:
+            spr = spr.resize((max(1, round(spr.width * sc)), max(1, round(spr.height * sc))), self.RES.BICUBIC)
+            ax, ay = ax * sc, ay * sc
+        if abs(rot) > 0.05:
+            spr = spr.rotate(rot, resample=self.RES.BICUBIC, center=(ax, ay))
+        spr = spr.convert("RGBA")
+        if alpha < 0.995:
+            spr.putalpha(spr.getchannel("A").point(lambda v, k=max(0.0, alpha): int(v * k)))
+        canvas = self.blank.copy()
+        canvas.paste(spr, (round(self.cx + ox + dx - ax), round(self.base + oy - dy - ay)))
+        return canvas
+
+
+def render_character_layer(spec, wav, frames, W, H, F, out, phase=0, enter=True, leave=True):
+    """Transparent .mov (qtrle + alpha) of exactly `frames` frames: the character, animated, on its own layer."""
+    env = voice_envelope(wav, frames, F) if wav and os.path.exists(wav) else []
+    player = CharPlayer(spec, W, H, F, frames, env, phase, enter, leave)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    tmp = out[:-4] + ".part.mov"
+    log = tmp + ".log"
+    codec = CHAR_CODECS.get(str(chcfg().get("codec") or "qtrle").lower(), CHAR_CODECS["qtrle"])
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{W}x{H}",
+           "-r", str(F), "-i", "-", "-an"] + codec + [tmp]
+    with open(log, "wb") as lf:
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=lf)
+        try:
+            for f in range(frames):
+                p.stdin.write(player.frame(f).tobytes())
+            p.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        p.wait()
+    if p.returncode != 0 or not os.path.exists(tmp):
+        err = ""
+        try:
+            with open(log, "r", encoding="utf-8", errors="replace") as lf:
+                err = tail(lf.read())
+        except OSError:
+            pass
+        raise RuntimeError(f"ffmpeg could not write the character layer:\n{err}")
+    os.replace(tmp, out)
+    for junk in (log,):
+        try:
+            os.remove(junk)
+        except OSError:
+            pass
+    return out
+
+
+def burn_character(video, layer, out, frames):
+    """Bake the character layer into the picture clip (for the mp4 / simple VideoPad / TikTok paths)."""
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    ffrun(["ffmpeg", "-y", "-loglevel", "error", "-i", video, "-i", layer, "-filter_complex",
+           "[0:v][1:v]overlay=0:0:format=auto,format=yuv420p[v]", "-map", "[v]", "-frames:v", str(frames)]
+          + X264 + [out], out)
+    return out
+
+
+def char_stage(sid, seg, req, m, item, wav, frames, W, H, fps, mode, phase, enter, leave, cache):
+    """Make (or reuse) this segment's character layer. mode: 'layer' | 'burn'. Never stops the build."""
+    if not char_pil():
+        return
+    try:
+        spec = char_resolve(req, "solo" if m.get("solo") else "corner", sid)
+        if not spec:
+            return
+        d = os.path.join(CHAR_LAYERS_DIR, f"{W}x{H}_{fps}fps")
+        layer = os.path.join(d, f"{sid}.mov")
+        sig = [file_sig(spec["file"]), file_sig(spec["talk_file"]) if spec["talk_file"] else "", file_sig(wav)]
+        key = (f"char|{CHAR_VERSION}|{json.dumps(spec, sort_keys=True)}|{'|'.join(sig)}|{frames}|{fps}|{W}x{H}"
+               f"|{phase}|{int(enter)}{int(leave)}|{chcfg().get('codec') or 'qtrle'}")
+        if not cache.fresh(sid + "#char", key, layer):
+            render_character_layer(spec, wav, frames, W, H, fps, layer, phase, enter, leave)
+            cache.set(sid + "#char", key)
+        if mode == "burn":
+            bd = os.path.join(CHAR_BURN_DIR, f"{W}x{H}_{fps}fps")
+            burned = os.path.join(bd, f"{sid}.mp4")
+            bkey = f"burn|{file_sig(item['video_file'])}|{file_sig(layer)}|{frames}|v1"
+            if not cache.fresh(sid + "#burn", bkey, burned):
+                burn_character(item["video_file"], layer, burned, frames)
+                cache.set(sid + "#burn", bkey)
+            item["video_file"] = os.path.abspath(burned)
+        else:
+            item["char_file"] = os.path.abspath(layer)
+        item["char_name"] = spec["name"]
+        item["char_layout"] = spec["layout"]
+    except Exception as e:
+        print(f"    [!] {sid}: character skipped - {e}")
+
+
+# ---- STEP: characters (check the library, preview sheet) ----
+def step_characters(args):
+    lib = char_library(refresh=True)
+    os.makedirs(CHARS_DIR, exist_ok=True)
+    pil = char_pil()
+    if not lib:
+        print(f"No characters yet. Put transparent PNG cut-outs in {CHARS_DIR}/ :")
+        print(f"  {CHARS_DIR}/kratos.png                  one picture")
+        print(f"  {CHARS_DIR}/kratos/default.png + talk.png + angry.png   several poses (talk = mouth open)")
+        reveal(CHARS_DIR)
+        return
+    print(f"Characters in {CHARS_DIR}/ : {len(lib)}\n")
+    for ch in lib.values():
+        poses = ", ".join(sorted(ch["poses"]))
+        extra = []
+        if ch["talk"]:
+            extra.append(f"mouth pose '{ch['talk']}' follows the voice")
+        if (ch["meta"] or {}).get("facing"):
+            extra.append(f"faces {ch['meta']['facing']}")
+        print(f"  {ch['name']:<18} poses: {poses}" + (f"   ({'; '.join(extra)})" if extra else ""))
+        if pil:
+            from PIL import Image
+            for pn, pth in sorted(ch["poses"].items()):
+                try:
+                    im = Image.open(pth)
+                    if not char_has_alpha(pth):
+                        print(f"      [!] {pn}: no transparency ({im.width}x{im.height}) - this is not a cut-out, "
+                              "it would show as a rectangle. Remove the background first.")
+                except Exception as e:
+                    print(f"      [!] {pn}: cannot read ({e})")
+    try:
+        data = load_data(find_json(args.json))
+        use = {}
+        for s in iter_segments(data):
+            r = char_request(s)
+            if r:
+                use.setdefault(str(r["name"]).lower(), []).append(s.get("id", "?"))
+    except SystemExit:
+        use = {}
+    pc = char_project()
+    print(f"\nProject default: {pc.get('default') or '-'}    auto: {pc.get('auto') or 'off'}")
+    if use:
+        print("Used in segments.json:")
+        for nm, ids in use.items():
+            ok = "OK" if char_find(nm) else "NOT IN characters/"
+            print(f"  {nm:<18} {len(ids)} segment(s)   {ok}")
+    if not pil:
+        return
+    from PIL import Image, ImageDraw, ImageFont
+    TW, TH = 640, 360
+    names = list(lib.values())
+    sheet = Image.new("RGB", (TW * 2 + 30, (TH + 50) * len(names) + 10), (24, 24, 28))
+    dr = ImageDraw.Draw(sheet)
+    fp = find_font()
+    font = ImageFont.truetype(fp, 22) if fp else ImageFont.load_default()
+    old = CHAR_FRAME[:]
+    CHAR_FRAME[:] = [TW, TH]
+    try:
+        for i, ch in enumerate(names):
+            y0 = 10 + i * (TH + 50)
+            dr.text((12, y0 + 4), ch["name"], fill=(255, 190, 40), font=font)
+            for j, layout in enumerate(("corner", "solo")):
+                x0 = 10 + j * (TW + 10)
+                if layout == "solo":
+                    tile = Image.open(char_bg_file("")).convert("RGBA")
+                else:
+                    tile = Image.new("RGBA", (TW, TH), (70, 78, 90, 255))
+                    d2 = ImageDraw.Draw(tile)
+                    for gx in range(0, TW, 80):
+                        d2.line([(gx, 0), (gx, TH)], fill=(84, 92, 104), width=1)
+                    d2.text((16, 14), "your footage", fill=(150, 160, 175), font=font)
+                spec = char_resolve({"name": ch["name"]}, layout, "preview")
+                if spec:
+                    pl = CharPlayer(spec, TW, TH, 24, 240, [0.0] * 240, 0, False, False)
+                    tile = Image.alpha_composite(tile, pl.frame(60))
+                sheet.paste(tile.convert("RGB"), (x0, y0 + 36))
+                dr.text((x0 + (TW - 90 if j else 150), y0 + 4), layout, fill=(170, 175, 190), font=font)
+    finally:
+        CHAR_FRAME[:] = old
+    out = os.path.join(CHARS_DIR, "_preview.png")
+    sheet.save(out)
+    print(f"\n[+] preview: {out}  (left: corner over footage, right: solo scene)")
+    reveal(out)
+
+
+def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, label="clips", characters="layer"):
+    """For every segment that has narration audio: picture clip (+ original audio, + overlay, + character).
+    Returns items in order. render=False only fits the audio (used for .srt).
+    characters: "layer" = own transparent video layer (Premiere / VideoPad) | "burn" = baked into the picture
+    (mp4, simple VideoPad, TikTok) | False = none."""
     need("ffmpeg", "ffprobe")
     os.makedirs(clips_dir, exist_ok=True)
     cache = Cache(os.path.join(clips_dir, "_cache.json"))
@@ -2506,6 +3276,9 @@ def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, lab
     dv = default_video()
     if MODULE == "comic_recap":
         comic_prepare(segments)
+    CHAR_FRAME[:] = [W, H]
+    reqs = [char_request(s) if (characters and render) else None for s in segments]
+    run_frames, n_chars = 0, 0
     print(f"Building {len(segments)} {label}"
           + (f" (source: {dv})" if dv else "") + f" at {W}x{H} {fps}fps, fill={fill}...\n")
     items = []
@@ -2521,12 +3294,14 @@ def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, lab
             wav, frames = fit_audio(sid, fps, acache)
             total = frames / fps
             m = seg_media(seg, dv)
+            req = reqs[n_seg]
             clip = os.path.join(clips_dir, f"{sid}.mp4")
             tag, note = "", ""
             if render:
                 if m["kind"] == "video":
                     use = min(m["avail"], total)
-                    key = f"video|{file_sig(m['file'])}|{m['start']:.3f}|{use:.3f}|{frames}|{fps}|{W}x{H}|{fill}|v3"
+                    key = (f"video|{file_sig(m['file'])}|{m['start']:.3f}|{use:.3f}|{frames}|{fps}|{W}x{H}|{fill}|v3"
+                           + ("|loop" if m.get("loop") else ""))
                     drawfn = lambda: render_video_clip(m, frames, W, H, fps, clip, fill)
                     if m["avail"] > total + 0.05:
                         note = f"footage trimmed by {m['avail'] - total:.2f}s to fit voice"
@@ -2560,7 +3335,7 @@ def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, lab
                     "audio_file": os.path.abspath(wav), "frames": frames, "text": sub_text(seg),
                     "caption": str(seg.get("caption") or "").strip(), "rank": seg.get("rank"),
                     "chapter": str(seg.get("chapter") or "").strip(), "orig_file": None,
-                    "gfx_file": None, "seg": seg}
+                    "gfx_file": None, "char_file": None, "char_name": "", "seg": seg}
 
             if render and m["kind"] == "video":
                 vol = keep_audio_volume(seg)
@@ -2582,6 +3357,18 @@ def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, lab
                     render_gfx(seg.get("rank"), item["caption"], frames, W, H, fps, gf)
                     cache.set(sid + "#gfx", gkey)
                 item["gfx_file"] = os.path.abspath(gf)
+            if render and characters and req:
+                prev_same = n_seg > 0 and char_req_key(reqs[n_seg - 1]) == char_req_key(req)
+                next_same = n_seg + 1 < len(reqs) and char_req_key(reqs[n_seg + 1]) == char_req_key(req)
+                phase = run_frames if prev_same else 0          # idle motion carries on across segments
+                char_stage(sid, seg, req, m, item, item["audio_file"], frames, W, H, fps, characters,
+                           phase, not prev_same, not next_same, cache)
+                run_frames = phase + frames
+                if item["char_name"]:
+                    n_chars += 1
+                    note += f"  + {item['char_name']} ({item['char_layout']})"
+            else:
+                run_frames = 0
         except Exception as e:
             print(f"[!] Skipping {sid}: {e}")
             continue
@@ -2590,6 +3377,14 @@ def build_items(segments, fps, W, H, clips_dir, fill, render=True, gfx=True, lab
         items.append(item)
 
     progress(len(segments), len(segments), "Clips rendered")
+    if n_chars:
+        print(f"[+] character animation: {n_chars} segment(s) "
+              + ("as their own video layer" if characters == "layer" else "baked into the picture"))
+        if characters == "layer":
+            mb = sum(os.path.getsize(i["char_file"]) for i in items if i.get("char_file") and os.path.exists(i["char_file"])) / 1e6
+            if mb > 1500:
+                print(f"    [i] the character layers take {mb / 1000:.1f} GB in char_layers/ - set "
+                      "config.json character.codec to \"png\" or \"prores\" for smaller files")
     if not items:
         die("Nothing to build - no segment had audio. Run the voice step first.")
     return items
@@ -2633,7 +3428,7 @@ def add_rate(parent):
 
 # ====================================================================
 # STEP 4A: Premiere sequence (multi-track XML)
-#   V1 footage/stills/slates | V2 number & caption graphics
+#   V1 footage/stills/slates | V2 character (if any) | V2/V3 number & caption graphics
 #   A1 voice-over | A2 original audio (ducked) | A3 music bed
 # ====================================================================
 def xml_tcode(parent):
@@ -2731,7 +3526,8 @@ def write_premiere_xml(items, music):
     v_el = sub(media, "video")
     xml_vchars(sub(v_el, "format"))
     v1 = sub(v_el, "track")
-    v2 = sub(v_el, "track") if any(i["gfx_file"] for i in items) else None
+    vch = {nm: sub(v_el, "track") for nm in char_names(items)}                       # one layer per character
+    v2 = sub(v_el, "track") if any(i["gfx_file"] for i in items) else None            # numbers / captions on top
 
     a_el = sub(media, "audio")
     sub(a_el, "numOutputChannels", 2)
@@ -2753,6 +3549,9 @@ def write_premiere_xml(items, music):
         xml_links(vc, idx)
         ac = xml_audio_clip(a1, f"clipitem-a-{idx}", it["id"], it["audio_file"], cur, n)
         xml_links(ac, idx)
+        if it.get("char_file") and it["char_name"] in vch:
+            xml_video_clip(vch[it["char_name"]], f"clipitem-c-{idx}", "CHAR " + it["char_name"], it["char_file"],
+                           cur, n, alpha=True)
         if it["gfx_file"] and v2 is not None:
             label = (f"#{it['rank']} " if it["rank"] not in (None, "") else "") + (it["caption"] or "")
             xml_video_clip(v2, f"clipitem-g-{idx}", "GFX " + label.strip(), it["gfx_file"], cur, n, alpha=True)
@@ -2766,7 +3565,7 @@ def write_premiere_xml(items, music):
     if music and a3 is not None:
         xml_audio_clip(a3, "clipitem-m-0", "music bed", music, 0, total)
 
-    for tr in (v1, v2, a1, a2, a3):
+    for tr in [v1] + list(vch.values()) + [v2, a1, a2, a3]:
         if tr is not None:
             sub(tr, "enabled", "TRUE")
             sub(tr, "locked", "FALSE")
@@ -2789,7 +3588,7 @@ def write_premiere_xml(items, music):
 # STEP 4D: VideoPad project (.vpj)
 #   Same timeline as the Premiere XML, written in NCH VideoPad's own project format.
 #   Format notes + the proof it was built from: videopad-agent-pipeline / docs/vpj-format-findings.md
-#   V1 footage | V2 number & caption graphics | A1 voice-over | A2 original audio | A3 music
+#   V1 footage | V2 character (if any) | V2/V3 number & caption graphics | A1 voice-over | A2 original audio | A3 music
 #   --simple: V1 + A1 only, picture and voice muxed into one file per segment.
 # ====================================================================
 VPJ_OUT = "videopad_project.vpj"
@@ -2995,7 +3794,7 @@ def check_vpj(text):
     if bad:
         return bad
     seqs = [c for c in sec["clips"] if c.get("type") == "6"]
-    media = {c["h"]: c for c in sec["clips"] if c.get("type") in ("3", "5")}
+    media = {c["h"]: c for c in sec["clips"] if c.get("type") in ("3", "5", "2")}   # 2 = still image
     tracks = {t["h"]: t for t in sec["tracks"]}
     if len(seqs) != 1:
         bad.append(f"expected 1 sequence record, found {len(seqs)}")
@@ -3013,19 +3812,20 @@ def check_vpj(text):
         if t is None:
             bad.append(f"clip {c['h']}: htrack {c.get('htrack')} does not exist")
             continue
-        if (t["type"] == "1") != (m["type"] == "3"):
-            bad.append(f"clip {c['h']}: a {'video' if m['type'] == '3' else 'audio'} source sits on a "
+        if (t["type"] == "1") != (m["type"] in ("3", "2")):
+            bad.append(f"clip {c['h']}: a {'video' if m['type'] in ('3', '2') else 'audio'} source sits on a "
                        f"{'video' if t['type'] == '1' else 'audio'} track")
         tin, tout, off = int(c["in"]), int(c["out"]), int(c["offset"])
-        if not (0 <= tin < tout <= int(m["out"])):
-            bad.append(f"clip {c['h']}: trim {tin}-{tout} is outside its source (0-{m['out']})")
+        mout = int(m.get("out") or m.get("duration") or 0)
+        if not (0 <= tin < tout <= mout):
+            bad.append(f"clip {c['h']}: trim {tin}-{tout} is outside its source (0-{mout})")
         end = max(end, off + tout - tin)
-        if c.get("hlinked"):
+        if c.get("hlinked") not in (None, "", "0"):          # hlinked=0 = not linked (VideoPad writes it)
             o = byh.get(c["hlinked"])
             if o is None or o.get("hlinked") != c["h"]:
                 bad.append(f"clip {c['h']}: link to {c['hlinked']} is not mutual")
     for m in media.values():
-        if m.get("hlinked") and media.get(m["hlinked"], {}).get("hlinked") != m["h"]:
+        if m.get("hlinked") not in (None, "", "0") and media.get(m["hlinked"], {}).get("hlinked") != m["h"]:
             bad.append(f"bin item {m['h']}: link to {m['hlinked']} is not mutual")
     chains = [c.get("hclip") for c in sec["effectchains"]]
     want = [c["h"] for c in sec["trackclips"]] + [seqs[0]["h"]] + list(media)
@@ -3063,6 +3863,9 @@ def write_videopad_project(items, music, simple=False, out=VPJ_OUT):
     seq_name = os.path.basename(ROOT) or "Recap Sequence"
     media, clips = [], []
     has_gfx = (not simple) and any(i["gfx_file"] for i in items)
+    chars = [] if simple else char_names(items)                 # one video layer per character
+    tr_char = {nm: 2 + k for k, nm in enumerate(chars)}
+    tr_gfx = (2 + len(chars)) if has_gfx else None
     has_orig = (not simple) and any(i["orig_file"] for i in items)
     has_music = (not simple) and bool(music)
     cur = 0
@@ -3078,9 +3881,14 @@ def write_videopad_project(items, music, simple=False, out=VPJ_OUT):
             media.append({"key": f"a{idx}", "path": it["audio_file"], "dur": n, "kind": "audio"})
             clips.append({"media": f"v{idx}", "v": 1, "a": None, "offset": off, "in": 0, "out": n})
             clips.append({"media": f"a{idx}", "v": None, "a": 1, "offset": off, "in": 0, "out": n})
+            if it.get("char_file") and it["char_name"] in tr_char:
+                media.append({"key": f"c{idx}", "path": it["char_file"], "dur": n, "kind": "video",
+                              "name": "CHAR " + it["char_name"]})
+                clips.append({"media": f"c{idx}", "v": tr_char[it["char_name"]], "a": None, "offset": off,
+                              "in": 0, "out": n})
             if has_gfx and it["gfx_file"]:
                 media.append({"key": f"g{idx}", "path": it["gfx_file"], "dur": n, "kind": "video"})
-                clips.append({"media": f"g{idx}", "v": 2, "a": None, "offset": off, "in": 0, "out": n})
+                clips.append({"media": f"g{idx}", "v": tr_gfx, "a": None, "offset": off, "in": 0, "out": n})
             if has_orig and it["orig_file"]:
                 media.append({"key": f"o{idx}", "path": it["orig_file"], "dur": n, "kind": "audio"})
                 clips.append({"media": f"o{idx}", "v": None, "a": 2, "offset": off, "in": 0, "out": n})
@@ -3089,7 +3897,7 @@ def write_videopad_project(items, music, simple=False, out=VPJ_OUT):
         media.append({"key": "music", "path": music, "dur": total_ms, "kind": "audio"})
         clips.append({"media": "music", "v": None, "a": 2 + (1 if has_orig else 0), "offset": 0,
                       "in": 0, "out": total_ms, "name": "music bed"})
-    n_v = 2 if has_gfx else 1
+    n_v = 1 + len(chars) + (1 if has_gfx else 0)
     n_a = 1 + (1 if has_orig else 0) + (1 if has_music else 0)
     text = assemble_vpj(seq_name, total_ms, n_v, n_a, media, clips,
                         export_path=os.path.abspath(os.path.splitext(out)[0] + ".mp4"))
@@ -3105,7 +3913,7 @@ def step_videopad(args):
         die("No 'youtube' segments in the JSON.")
     simple = bool(getattr(args, "simple", False))
     items = build_items(segments, FPS, WIDTH, HEIGHT, CLIPS_DIR, CFG.get("fill", "pad"),
-                        gfx=not simple, label="segments")
+                        gfx=not simple, label="segments", characters="burn" if simple else "layer")
     music = None if simple else make_music_bed(sum(i["frames"] for i in items), FPS)
     total_ms, problems = write_videopad_project(items, music, simple)
     write_extras(items)
@@ -3123,13 +3931,34 @@ def step_videopad(args):
               + (" ..." if len(slates) > 12 else "") + "\n    Add the footage (collect step), run this again - slates are replaced.")
     print("In VideoPad: File > Open Project > pick the .vpj (or double-click it).\n"
           "VideoPad will say 'The provided file may be damaged' - that is expected, click Try Load (it can appear more than once).\n"
-          + ("Tracks: V1 picture | A1 voice (one file per segment)."
+          + ("Tracks: V1 picture | A1 voice (one file per segment)"
+             + (" - characters are baked into the picture." if any(i["char_name"] for i in items) else ".")
              if simple else
-             "Tracks: V1 footage | V2 number/caption graphics | A1 voice | A2 original sound | A3 music."))
+             track_help(items)))
     print("If VideoPad refuses the full project, run it again with 'Build VideoPad project (simple)'.")
     print_srt_help()
-    print("Keep clips/, clips_av/, gfx/ and audio_trim/ where they are (the project stores paths, not media).")
+    print("Keep clips/, clips_av/, gfx/, audio_trim/" + (", char_layers/" if any(i.get("char_file") for i in items) else "")
+          + " where they are (the project stores paths, not media).")
     reveal(".")
+
+
+def char_names(items):
+    """Characters that have a layer, in order of first appearance (each gets its own video track)."""
+    out = []
+    for i in items:
+        if i.get("char_file") and i["char_name"] not in out:
+            out.append(i["char_name"])
+    return out
+
+
+def track_help(items):
+    """One line that tells the user what is on which track."""
+    v = ["V1 footage"]
+    for nm in char_names(items):
+        v.append(f"V{len(v) + 1} {nm}")
+    if any(i["gfx_file"] for i in items):
+        v.append(f"V{len(v) + 1} number/caption graphics")
+    return "Tracks: " + " | ".join(v) + " | A1 voice | A2 original sound | A3 music."
 
 
 def write_extras(items):
@@ -3179,9 +4008,10 @@ def step_premiere(args):
         print(f"[!] {len(slates)} placeholder slate(s) on V1 (missing footage): {', '.join(slates[:12])}"
               + (" ..." if len(slates) > 12 else "") + "\n    Add the footage (collect step), run this again - slates are replaced.")
     print("In Premiere: File > Import > pick the XML. Double-click the sequence in the Project panel.\n"
-          "Tracks: V1 footage | V2 number/caption graphics | A1 voice | A2 original sound | A3 music.")
+          + track_help(items))
     print_srt_help()
-    print("Keep clips/, gfx/ and audio_trim/ where they are.")
+    print("Keep clips/, gfx/, audio_trim/" + (", char_layers/" if any(i.get("char_file") for i in items) else "")
+          + " where they are.")
     reveal(".")
 
 
@@ -3244,7 +4074,7 @@ def step_video(args):
     if not segments:
         die("No 'youtube' segments in the JSON.")
     items = build_items(segments, FPS, WIDTH, HEIGHT, CLIPS_DIR, CFG.get("fill", "pad"),
-                        gfx=False, label="segments")
+                        gfx=False, label="segments", characters="burn")
     for i in items:
         i["fps"] = FPS
     total = sum(i["frames"] for i in items) / FPS
@@ -3256,6 +4086,8 @@ def step_video(args):
     print(f"\nDone. {FINAL_OUT}  ({got:.1f}s, expected {total:.1f}s)")
     if any(i["rank"] not in (None, "") or i["caption"] for i in items):
         print("[i] Number/caption graphics are NOT burned into the mp4 - use the Premiere XML for those.")
+    if any(i.get("char_name") for i in items):
+        print("[i] Characters ARE baked into this mp4. For a separate, movable character layer use the Premiere XML / VideoPad project.")
     if abs(got - total) > 1.0:
         print("[!] The length is off by more than a second - please send me a screenshot of this window.")
     reveal(FINAL_OUT)
@@ -3436,7 +4268,8 @@ def step_tiktok(args):
     made = 0
     for part, clips in parts.items():
         print(f"\n=== TikTok: {part} ===")
-        items = build_items(clips, tfps, W, H, TIKTOK_TEMP, "blur", gfx=False, label=f"{part} clips")
+        items = build_items(clips, tfps, W, H, TIKTOK_TEMP, "blur", gfx=False, label=f"{part} clips",
+                            characters="burn")
         for i in items:
             i["fps"] = tfps
         music = make_music_bed(sum(i["frames"] for i in items), tfps, name=f"music_{part}")
@@ -3471,6 +4304,10 @@ def status_lines(args_json=None):
         L.append(f"Source  : {dv or 'no main video in folder'}   footage/: {n_foot} clip(s)   images/: {n_img}")
         L.append(f"Subtitles (.srt in subs/): {len(glob.glob(SUBS_DIR + '/*.srt'))}")
     L.append(f"Engine  : {CFG['tts']['engine'] or '-'}")
+    clib = char_library(refresh=True)
+    if clib or char_project().get("default"):
+        L.append(f"Characters: {', '.join(v['name'] for v in clib.values()) or 'none in characters/'}   "
+                 f"default: {char_project().get('default') or '-'}   auto: {char_project().get('auto') or 'off'}")
     nxt = []
     try:
         data = load_data(find_json(args_json))
@@ -3535,7 +4372,8 @@ def step_check(args):
     for name in ("chatterbox", "pocket"):
         if eng == name:
             print(f"  {name:<9} {'OK' if engine_python(name) else 'MISSING  -> run SETUP.bat (main folder)'}")
-    for mod in ("requests", "edge_tts") + (("kokoro_onnx",) if CFG["tts"].get("engine") == "kokoro" else ()) + (("PIL", "numpy", "fitz") if MODULE == "comic_recap" else ()):
+    for mod in (("requests", "edge_tts") + (("kokoro_onnx",) if CFG["tts"].get("engine") == "kokoro" else ())
+                + (("PIL", "numpy", "fitz") if MODULE == "comic_recap" else (("PIL",) if char_library(True) else ()))):
         try:
             __import__(mod)
             print(f"  {mod:<9} OK")
@@ -3560,6 +4398,44 @@ def step_check(args):
 # ====================================================================
 # DEMO: synthetic media so you can test the whole pipeline (and Premiere import) in a minute
 # ====================================================================
+def demo_cutouts():
+    """Two cartoon cut-outs (transparent PNG) so the character layer can be tried without any artwork."""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return False
+    base = os.path.join(CHARS_DIR, "demo_buddy")
+    os.makedirs(base, exist_ok=True)
+
+    def buddy(mouth_open):
+        im = Image.new("RGBA", (600, 900), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        d.rounded_rectangle((150, 470, 450, 900), 90, fill=(52, 120, 220, 255), outline=(20, 50, 110, 255), width=8)
+        d.ellipse((120, 80, 480, 470), fill=(255, 214, 160, 255), outline=(120, 70, 30, 255), width=8)
+        d.ellipse((205, 220, 265, 290), fill=(255, 255, 255, 255), outline=(40, 40, 40, 255), width=5)
+        d.ellipse((335, 220, 395, 290), fill=(255, 255, 255, 255), outline=(40, 40, 40, 255), width=5)
+        d.ellipse((230, 245, 258, 280), fill=(30, 30, 30, 255))
+        d.ellipse((360, 245, 388, 280), fill=(30, 30, 30, 255))
+        if mouth_open:
+            d.ellipse((240, 340, 360, 430), fill=(150, 30, 40, 255), outline=(60, 10, 20, 255), width=6)
+        else:
+            d.arc((235, 330, 365, 410), 20, 160, fill=(60, 10, 20, 255), width=8)
+        return im
+    buddy(False).save(os.path.join(base, "default.png"))
+    buddy(True).save(os.path.join(base, "talk.png"))
+    with open(os.path.join(base, "character.json"), "w", encoding="utf-8") as f:
+        json.dump({"facing": "right"}, f)
+    im = Image.new("RGBA", (500, 700), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((100, 260, 400, 690), 40, fill=(190, 195, 205, 255), outline=(60, 60, 70, 255), width=8)
+    d.rounded_rectangle((130, 40, 370, 270), 40, fill=(210, 215, 225, 255), outline=(60, 60, 70, 255), width=8)
+    d.ellipse((180, 110, 230, 160), fill=(255, 80, 60, 255))
+    d.ellipse((270, 110, 320, 160), fill=(255, 80, 60, 255))
+    d.rectangle((190, 200, 310, 220), fill=(60, 60, 70, 255))
+    im.save(os.path.join(CHARS_DIR, "demo_robot.png"))
+    return True
+
+
 def step_demo(args):
     need("ffmpeg", "ffprobe")
     try:
@@ -3581,9 +4457,12 @@ def step_demo(args):
     ff("-f", "lavfi", "-i", "testsrc=s=640x480:r=30:d=8", "-f", "lavfi", "-i", "sine=f=523:d=8",
        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", f"{FOOTAGE_DIR}/demo_b_4x3.mp4")
     ff("-f", "lavfi", "-i", "testsrc2=s=1000x1000:d=1", "-frames:v", "1", f"{IMAGES_DIR}/demo_still.png")
-    lens = {"d_01": 3.2, "d_02": 4.0, "d_03": 3.0, "d_04": 3.0, "d_05": 4.0}
+    have_chars = demo_cutouts()
+    lens = {"d_01": 3.2, "d_02": 4.0, "d_03": 3.0, "d_04": 3.0, "d_05": 4.0, "d_06": 4.0}
     for sid, ln in lens.items():
-        ff("-f", "lavfi", "-i", f"sine=f=220:d={ln}", "-c:a", "libmp3lame", f"{AUDIO_DIR}/{sid}.mp3")
+        # a tone that "speaks" in short bursts, so the character's mouth has something to follow
+        ff("-f", "lavfi", "-i", f"aevalsrc=0.6*sin(2*PI*220*t)*gt(sin(2*PI*2.5*t)\\,-0.2):d={ln}:s=44100",
+           "-c:a", "libmp3lame", f"{AUDIO_DIR}/{sid}.mp3")
     demo = {"youtube": [
         {"id": "d_01", "src": "demo_a.mp4", "src_start": "00:00:00", "src_end": "00:00:08", "keep_audio": True,
          "chapter": "Intro", "caption": "Chapter one starts here", "narration": "This is the first demo segment."},
@@ -3596,6 +4475,14 @@ def step_demo(args):
                   "fallback": "any b-roll"}, "narration": "This shot is missing, so you get a slate."},
         {"id": "d_05", "src": "demo_a.mp4", "src_start": "00:00:06", "src_end": "00:00:08",
          "narration": "Short footage, long voice: the last frame is held."}], "tiktok": {}}
+    if have_chars:                       # character animation: corner over a clip, other side, robot, solo scene
+        yt = demo["youtube"]
+        yt[0].update({"character": "demo_buddy"})
+        yt[1].update({"character": "demo_buddy", "char_pos": "bottom-left", "char_anim": "talk+sway"})
+        yt[2].update({"character": "demo_robot", "char_pos": "bottom-right", "char_enter": "pop"})
+        yt[4].update({"character": "demo_robot", "char_pos": "right", "char_anim": "float"})
+        yt.append({"id": "d_06", "commentary": True, "character": "demo_buddy",
+                   "narration": "And this is a solo commentary scene: no footage, just the character on a background."})
     with open("segments.json", "w", encoding="utf-8") as f:
         json.dump(demo, f, indent=2)
     print("Demo media + audio + segments.json created. Now run: Build Premiere XML, import it, "
@@ -4476,7 +5363,7 @@ def step_say(args):
 STEPS = {"init": step_init, "module": step_module, "subs": step_subs, "index": step_index,
          "sheets": step_sheets, "say": step_say, "comic": step_comic, "collect": step_collect, "tts": step_tts, "review": step_review,
          "premiere": step_premiere, "videopad": step_videopad, "video": step_video, "srt": step_srt, "tiktok": step_tiktok,
-         "check": step_check, "demo": step_demo,
+         "check": step_check, "demo": step_demo, "characters": step_characters,
          "missing": step_missing, "collect_one": step_collect_one}
 NO_STATE = ("init", "module", "demo", "missing", "collect_one", "say")
 

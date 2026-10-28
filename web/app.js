@@ -195,6 +195,7 @@ function renderTab() {
   else if (state.tab === "pipeline") renderPipeline(c);
   else if (state.tab === "script") renderScript(c);
   else if (state.tab === "footage") (isComic() ? renderComic(c) : renderFootage(c));
+  else if (state.tab === "characters") renderCharacters(c);
   else if (state.tab === "voice") renderVoice(c);
   else if (state.tab === "outputs") renderOutputs(c);
   else if (state.tab === "settings") renderSettings(c);
@@ -422,11 +423,12 @@ function pipelineSteps() {
     : "Pull embedded subtitle tracks from the film into subs/." });
   else steps.push({ step: "index", name: "Index footage", desc: "Contact sheets for every clip in footage/." });
   if (!isComic()) steps.push({ step: "sheets", name: "Contact sheets", desc: "Sheets for segments marked need_visual." });
+  steps.push({ step: "characters", name: "Check characters", desc: "List the PNG cut-outs in characters/, flag any without transparency, and make characters/_preview.png (corner + solo look)." });
   steps.push({ step: "review", name: "Export review sheet", desc: "Write review_sheet.csv (optional Excel workflow)." });
   steps.push({ step: "tts", name: "Voice-over", desc: "Generate narration audio (only new / edited segments).", engine });
-  steps.push({ step: "premiere", name: "Build Premiere XML", desc: "Cut clips + multi-track XML (+ srt, chapters, shot list)." });
-  steps.push({ step: "videopad", name: "Build VideoPad project", desc: "Same timeline as a VideoPad .vpj (V1/V2 + A1-A3). Click Try Load when VideoPad warns." });
-  steps.push({ step: "videopad_simple", name: "Build VideoPad project (simple)", desc: "Fallback: picture + voice only, one file per segment. Use if the full project will not open." });
+  steps.push({ step: "premiere", name: "Build Premiere XML", desc: "Cut clips + multi-track XML (+ srt, chapters, shot list). Characters get their own video track." });
+  steps.push({ step: "videopad", name: "Build VideoPad project", desc: "Same timeline as a VideoPad .vpj (V1 footage, character + graphics tracks, A1-A3). Click Try Load when VideoPad warns." });
+  steps.push({ step: "videopad_simple", name: "Build VideoPad project (simple)", desc: "Fallback: picture + voice only, one file per segment (characters are baked into the picture). Use if the full project will not open." });
   steps.push({ step: "srt", name: "Build subtitles", desc: "Write recap_subtitles.srt for Premiere." });
   if (isRecap()) {
     steps.push({ step: "video", name: "Build full video", desc: isComic() ? "Camera moves (zoom / pan / swipe) rendered over the panels into one recap_final.mp4." : "One finished recap_final.mp4." });
@@ -532,6 +534,56 @@ function segField(label, f, value, textarea) {
     '</div>';
 }
 
+function segSelect(label, f, value, options) {
+  value = value == null ? "" : String(value);
+  const opts = options.slice();
+  if (value && !opts.some((o) => (Array.isArray(o) ? o[0] : o) === value)) opts.push(value);
+  return '<div><label>' + esc(label) + '</label><select data-f="' + f + '">' +
+    opts.map((o) => {
+      const v = Array.isArray(o) ? o[0] : o, t = Array.isArray(o) ? o[1] : o;
+      return '<option value="' + esc(v) + '"' + (v === value ? " selected" : "") + '>' + esc(t) + '</option>';
+    }).join("") + '</select></div>';
+}
+
+const CHAR_POSITIONS = [["", "(default)"], "bottom-right", "bottom-left", "bottom-center", "center", "middle", "left", "right", "top-left", "top-right"];
+
+// a segment's character wishes as flat fields (the script may hold them nested: "character": {"name": ..., "pos": ...})
+function segCharFields(seg) {
+  const out = {};
+  const c = seg.character;
+  if (c === false) out.character = "__none";
+  else if (c && typeof c === "object") {
+    if (c.name) out.character = c.name;
+    ["pos", "pose", "scale", "anim", "enter", "exit", "flip", "layout", "bg", "outline", "shadow", "x", "y"].forEach((k) => {
+      if (c[k] != null && c[k] !== "") out["char_" + k] = c[k];
+    });
+  } else if (typeof c === "string") out.character = c;
+  ["pos", "pose", "scale", "anim", "enter", "exit", "flip", "layout", "bg", "outline", "shadow", "x", "y"].forEach((k) => {
+    if (seg["char_" + k] != null && seg["char_" + k] !== "") out["char_" + k] = seg["char_" + k];
+  });
+  return out;
+}
+
+function segCharacterBox(seg) {
+  const cf = segCharFields(seg);
+  const names = ((state.detail && state.detail.characters) || []).map((c) => c.name);
+  const used = Object.keys(cf).length > 0 || seg.commentary;
+  return '<details class="charbox"' + (used ? " open" : "") + '><summary>🧍 Character' +
+      (cf.character && cf.character !== "__none" ? ": " + esc(cf.character) : "") + '</summary>' +
+    '<div class="mini-grid">' +
+      segSelect("character", "character", cf.character || "", [["", "(project default / none)"], ["__none", "(no character here)"]].concat(names)) +
+      segSelect("layout", "char_layout", cf.char_layout || "", [["", "auto"], ["corner", "corner (over the clip)"], ["solo", "solo (on a background)"]]) +
+      segSelect("position", "char_pos", cf.char_pos || "", CHAR_POSITIONS) +
+      segField("pose", "char_pose", cf.char_pose) +
+      segSelect("animation", "char_anim", cf.char_anim || "", [["", "(default: talk)"], "talk", "breathe", "bob", "float", "sway", "shake", "none", "talk+sway", "talk+bob"]) +
+      segSelect("enter", "char_enter", cf.char_enter || "", [["", "(default)"], "slide", "pop", "fade", "none"]) +
+      segField("solo background", "char_bg", cf.char_bg) +
+      segField("size (0.1-1.2)", "char_scale", cf.char_scale) +
+    '</div>' +
+    '<label class="check"><input type="checkbox" data-f="commentary"' + (seg.commentary ? " checked" : "") + '> commentary beat (solo scene if there is no footage)</label>' +
+  '</details>';
+}
+
 function renderSegmentCard(seg, part) {
   const shot = seg.shot || {};
   const est = wordsToSec(seg.narration);
@@ -558,6 +610,7 @@ function renderSegmentCard(seg, part) {
       segField("Shot queries (one per line)", "shot.queries", (shot.queries || []).join("\n"), true) +
       segField("Shot fallback", "shot.fallback", shot.fallback) +
     '</div>' +
+    segCharacterBox(seg) +
     '<label class="check"><input type="checkbox" data-f="keep_audio"' + (seg.keep_audio ? " checked" : "") + '> keep original audio</label>' +
     '<label class="check"><input type="checkbox" data-f="need_visual"' + (seg.need_visual ? " checked" : "") + '> need contact sheet</label>' +
   '</div>';
@@ -582,6 +635,14 @@ function readSegCard(card) {
   set("rank", get("rank"));
   set("chapter", get("chapter"));
   if (checked("keep_audio")) seg.keep_audio = true;
+  if (checked("commentary")) seg.commentary = true;
+  const ch = get("character");
+  if (ch === "__none") seg.character = false;
+  else if (ch) seg.character = ch;
+  ["layout", "pos", "pose", "anim", "enter", "bg", "scale"].forEach((k) => {
+    const v = get("char_" + k);
+    if (v !== "") seg["char_" + k] = (k === "scale" && !isNaN(parseFloat(v))) ? parseFloat(v) : v;
+  });
   if (checked("need_visual")) seg.need_visual = true;
   const sd = get("shot.description"), sq = get("shot.queries"), sf = get("shot.fallback");
   if (sd || sq || sf) {
@@ -894,6 +955,151 @@ async function renderFootage(c) {
         '<input type="file" multiple accept="video/*,.mkv,.ts,.m2ts" style="display:none" onchange="uploadFileInput(this,\'root\')"></label>' +
       '<div class="media-grid">' + ((d.root_media || []).map((f) => mediaItem(f.name, f.kind, fileUrl(f.name))).join("") ||
         '<div class="muted">empty</div>') + '</div></div>';
+}
+
+/* ------------------------------------------------------------------ */
+/* characters (PNG cut-outs that appear on screen in commentary moments) */
+/* ------------------------------------------------------------------ */
+function charCard(ch) {
+  const def = (ch.poses.find((p) => p.pose === "default") || ch.poses[0]);
+  const poses = ch.poses.map((p) =>
+    '<span class="chip" title="Click to preview" onclick="previewModal(\'' + fileUrl(p.file) + '\',\'image\')">' + esc(p.pose) +
+    ' <a href="#" title="Delete this pose" onclick="event.stopPropagation();charDelete(\'' + esc(ch.name) + '\',\'' + esc(p.pose) + '\');return false">×</a></span>').join("");
+  return '<div class="charcard">' +
+    '<div class="cutout"><img src="' + fileUrl(def.file) + '?t=' + Date.now() + '" loading="lazy"></div>' +
+    '<div class="cname">' + esc(ch.name) + '</div>' +
+    '<div class="chips">' + poses + '</div>' +
+    '<label>Art faces</label>' +
+    '<select onchange="charFacing(\'' + esc(ch.name) + '\',this.value)">' +
+      [["", "not set"], ["left", "left"], ["right", "right"]].map((o) =>
+        '<option value="' + o[0] + '"' + ((ch.facing || "") === o[0] ? " selected" : "") + '>' + o[1] + '</option>').join("") +
+    '</select>' +
+    '<div class="row" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">' +
+      '<label class="btn small" style="margin:0">＋ Pose<input type="file" accept="image/png,image/webp" multiple style="display:none" onchange="charAddPoses(this,\'' + esc(ch.name) + '\')"></label>' +
+      '<button class="btn danger small" onclick="charDelete(\'' + esc(ch.name) + '\')">Delete</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderCharacters(c) {
+  const d = state.detail, chars = d.characters || [];
+  const pc = d.project.character || {}, cc = (d.config && d.config.character) || {};
+  const dc = (state.bootstrap.default_config && state.bootstrap.default_config.character) || {};
+  const v = (k) => (cc[k] != null ? cc[k] : dc[k]);
+  const sel = (id, val, opts) => '<select id="' + id + '">' + opts.map((o) => {
+    const ov = Array.isArray(o) ? o[0] : o, ot = Array.isArray(o) ? o[1] : o;
+    return '<option value="' + esc(ov) + '"' + (String(val) === String(ov) ? " selected" : "") + '>' + esc(ot) + '</option>';
+  }).join("") + '</select>';
+  const hasPreview = ((d.files.characters || []).some((f) => f.name === "_preview.png"));
+  c.innerHTML =
+    '<div class="section"><h3>Character animation</h3>' +
+      '<div class="card"><p class="muted" style="margin-top:0">Add <b>transparent PNG cut-outs</b> of your characters. In the script, give a segment a ' +
+      '<code>character</code> and it appears on its own video layer: in a <b>corner over movie / show / doc clips</b>, or ' +
+      '<b>centered on a background</b> for solo commentary. The mouth pose (<code>talk</code>) opens and closes with the voice-over. ' +
+      'In Premiere and VideoPad the character is a separate track you can still move, scale or delete. ' +
+      'Mp4 and TikTok builds have it baked in.</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">' +
+        '<div style="min-width:200px"><label style="margin-top:0">Character name</label><input id="chNewName" placeholder="e.g. kratos"></div>' +
+        '<label class="btn primary small" style="margin:0">⬆ Add PNG(s)<input type="file" accept="image/png,image/webp" multiple style="display:none" onchange="charAdd(this)"></label>' +
+        '<button class="btn small" onclick="runStep(\'characters\')">Check + make preview</button>' +
+        '<button class="btn ghost small" onclick="apiPost(\'/api/projects/' + enc(state.current) + '/open\')">📂 Open folder</button>' +
+      '</div>' +
+      '<p class="muted" style="margin-bottom:0">One file = one picture. Several files = poses named after the files (<code>default.png</code>, <code>talk.png</code> = mouth open, <code>angry.png</code> …). ' +
+      'Poses can also be dropped in <code>characters/&lt;name&gt;/</code>, or named <code>name__pose.png</code>.</p></div></div>' +
+    '<div class="section"><h3>Library (' + chars.length + ')</h3>' +
+      (chars.length ? '<div class="char-grid">' + chars.map(charCard).join("") + '</div>'
+                    : '<div class="card muted">No characters yet. Add a transparent PNG above.</div>') + '</div>' +
+    (hasPreview ? '<div class="section"><h3>Preview</h3><div class="card"><img style="max-width:100%;border-radius:8px" src="' +
+      fileUrl("characters/_preview.png") + '?t=' + Date.now() + '"><p class="muted" style="margin-bottom:0">Left: corner over footage. Right: solo scene.</p></div></div>' : "") +
+    '<div class="section"><h3>Defaults for this project</h3><div class="card">' +
+      '<div class="grid cols2">' +
+        '<div><label style="margin-top:0">Default character</label>' +
+          sel("chDefault", pc.default || "", [["", "(none)"]].concat(chars.map((x) => x.name))) +
+        '<label>Show it automatically on</label>' +
+          sel("chAuto", pc.auto || "off", [["off", "only segments that name a character"], ["commentary", "segments marked commentary: true"], ["all", "every segment"]]) +
+        '<label>Corner position</label>' + sel("chPos", v("corner_pos"), CHAR_POSITIONS.slice(1)) +
+        '<label>Size over clips (share of frame height)</label><input id="chScale" value="' + esc(v("corner_scale")) + '">' +
+        '<label>Size in solo scenes</label><input id="chSolo" value="' + esc(v("solo_scale")) + '"></div>' +
+        '<div><label style="margin-top:0">Idle animation</label>' +
+          sel("chIdle", v("idle"), ["talk", "breathe", "bob", "float", "sway", "shake", "none", "talk+sway", "talk+bob"]) +
+        '<label>Enter / exit over clips</label>' + sel("chEnter", v("enter"), ["slide", "pop", "fade", "none"]) +
+        '<label>Solo background (#hex, gradient:#a,#b, or an image / video file name)</label><input id="chBg" value="' + esc(v("solo_bg")) + '">' +
+        '<label>Layer file format</label>' + sel("chCodec", v("codec"), [["qtrle", "qtrle - works everywhere (big files)"], ["png", "png - about half the size"], ["prores", "prores 4444 - smallest (not for VideoPad)"]]) +
+        '<label class="check"><input type="checkbox" id="chShadow"' + (v("shadow") !== false ? " checked" : "") + '> soft drop shadow</label>' +
+        '<label class="check"><input type="checkbox" id="chOutline"' + (v("outline") ? " checked" : "") + '> white sticker outline</label></div>' +
+      '</div>' +
+      '<button class="btn primary" style="margin-top:12px" onclick="saveCharacterSettings()">Save</button>' +
+    '</div></div>';
+}
+
+async function saveCharacterSettings() {
+  const num = (id, dflt) => { const x = parseFloat($(id).value); return isNaN(x) ? dflt : x; };
+  const proj = await apiPost("/api/projects/" + enc(state.current) + "/settings",
+    { project: { character: { default: $("chDefault").value, auto: $("chAuto").value } } });
+  const cfg = await apiPost("/api/projects/" + enc(state.current) + "/config", { config: { character: {
+    corner_pos: $("chPos").value, corner_scale: num("chScale", 0.46), solo_scale: num("chSolo", 0.8),
+    idle: $("chIdle").value, enter: $("chEnter").value, exit: $("chEnter").value,
+    solo_bg: $("chBg").value.trim() || "gradient:#1b2030,#43305f", codec: $("chCodec").value,
+    shadow: $("chShadow").checked, outline: $("chOutline").checked ? "#ffffff" : "" } } });
+  if (proj.error || cfg.error) { toast(proj.error || cfg.error); return; }
+  toast("Character settings saved ✓");
+  await loadDetail();
+  renderTab();
+}
+
+async function uploadCharFile(sub, fname, file) {
+  const url = "/api/projects/" + enc(state.current) + "/upload?folder=characters&sub=" + enc(sub) + "&name=" + enc(fname);
+  const j = await (await fetch(url, { method: "POST", body: file })).json();
+  if (j.error) { toast(fname + ": " + j.error); return false; }
+  return true;
+}
+
+async function charAdd(input) {
+  const files = Array.from(input.files || []);
+  input.value = "";
+  if (!files.length) return;
+  const base = (f) => f.name.replace(/\.[^.]+$/, "");
+  let name = ($("chNewName").value || "").trim();
+  if (!name) {
+    if (files.length > 1) { toast("Type the character's name first (several files = poses of one character)."); return; }
+    name = base(files[0]);
+  }
+  let ok = 0;
+  for (const f of files) {
+    const ext = (f.name.match(/\.[^.]+$/) || [".png"])[0].toLowerCase();
+    const pose = files.length === 1 ? "default" : base(f).toLowerCase().replace(/\s+/g, "_");
+    if (await uploadCharFile(name, pose + ext, f)) ok++;
+  }
+  toast("Added " + ok + " file(s) to " + name + " ✓");
+  await loadDetail();
+  renderTab();
+}
+
+async function charAddPoses(input, name) {
+  const files = Array.from(input.files || []);
+  input.value = "";
+  let ok = 0;
+  for (const f of files) {
+    const ext = (f.name.match(/\.[^.]+$/) || [".png"])[0].toLowerCase();
+    if (await uploadCharFile(name, f.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/\s+/g, "_") + ext, f)) ok++;
+  }
+  toast("Added " + ok + " pose(s) ✓");
+  await loadDetail();
+  renderTab();
+}
+
+async function charDelete(name, pose) {
+  if (!confirm(pose ? "Delete pose '" + pose + "' of " + name + "?" : "Delete the character '" + name + "' and all its poses?")) return;
+  const r = await apiPost("/api/projects/" + enc(state.current) + "/character", { action: "delete", name, pose: pose || "" });
+  if (r.error) { toast(r.error); return; }
+  await loadDetail();
+  renderTab();
+}
+
+async function charFacing(name, facing) {
+  const r = await apiPost("/api/projects/" + enc(state.current) + "/character", { action: "facing", name, facing });
+  if (r.error) { toast(r.error); return; }
+  await loadDetail();
 }
 
 /* ------------------------------------------------------------------ */

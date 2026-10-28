@@ -8,5 +8,9 @@
   "voice_card": "",
   "fact_check": "off",
   "music": false,
-  "captions": true
+  "captions": true,
+  "character": {
+    "default": "",
+    "auto": "off"
+  }
 }

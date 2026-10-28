@@ -57,6 +57,7 @@
   <a href="#real">Real story</a>
   <a href="#ranking">Ranking</a>
   <a href="#comic">Comic / manga</a>
+  <a href="#characters">Characters</a>
   <a href="#voice">Voices</a>
   <a href="#videopad">VideoPad</a>
   <a href="#premiere">Premiere</a>
@@ -224,6 +225,22 @@
 <div class="warn"><b>Heads-up:</b> like the other modules, the mp4 doesn't burn in captions. They appear in the Premiere XML and the .srt.</div>
 
 <!-- ============================ VOICES ============================ -->
+<h2 id="characters">Character animation (all modules)</h2>
+<p>Show a character on screen while you talk: in a corner over movie / show / documentary clips, or centered on a background for solo commentary.</p>
+<ol class="steps">
+  <li><b class="t">Characters tab → Add PNG(s)</b>Use <b>transparent PNG cut-outs</b>. One file = one picture. Several files = poses (<code>default.png</code>, <code>talk.png</code> = mouth open, <code>angry.png</code> ...). Set "Art faces" so the character is flipped to look toward the middle of the screen.</li>
+  <li><b class="t">Script</b>Give a segment a <b>Character</b> (the 🧍 box under each segment, or ask Claude: the prompt already explains the fields). Position, pose, animation and entrance are optional.</li>
+  <li><b class="t">Solo commentary</b>Tick <b>commentary beat</b> on a segment that has no footage (or set layout to <i>solo</i>): the character appears large in the middle on a gradient, image or video background.</li>
+  <li><b class="t">Build</b>The <b>talk</b> pose opens and closes with your voice-over (no talk pose: the character bounces with the voice). Consecutive segments with the same character and position keep it on screen without re-entering.</li>
+</ol>
+<table>
+  <tr><th>Output</th><th>Where the character is</th></tr>
+  <tr><td>Premiere XML</td><td>One video track per character (V2, V3, ...); number/caption graphics go on the track after them. Move, scale or delete freely.</td></tr>
+  <tr><td>VideoPad project</td><td>One video track per character (V2, V3, ...); graphics after them. Original sound and music have their own audio tracks.</td></tr>
+  <tr><td>Full video (.mp4), VideoPad simple, TikTok</td><td>Baked into the picture.</td></tr>
+</table>
+<div class="tip"><b>Tip:</b> <b>Run steps → Check characters</b> flags PNGs without transparency and writes a preview of every character in both looks. Character layers are large files in <code>char_layers/</code> (keep them where they are); Characters tab → "Layer file format" can halve their size.</div>
+
 <h2 id="voice">Choosing a voice</h2>
 <div class="tip"><b>Hear a voice before you commit:</b> the sidebar's <b>🎙 Voice Lab</b> lets you type any text, pick Edge, Kokoro, Chatterbox, Pocket TTS, ElevenLabs or MiniMax and play it right in the browser (no project needed). Inside a project, Voice tab → <b>Preview 3 segments</b> and <b>Hear it here</b> do the same with your own script. ElevenLabs and MiniMax use credits; Kokoro downloads a ~350 MB model once and then works offline.</div>
 <h3 id="local-voices">Chatterbox &amp; Pocket TTS (free local voices)</h3>
@@ -276,7 +293,7 @@
   <li><b class="t">File → Open Project</b> and pick it. VideoPad warns that the file "may be damaged" - that is expected, click <b>Try Load</b> (it can appear more than once).</li>
   <li><b class="t">If it will not open</b> run <b>Build VideoPad project (simple)</b> instead: picture + voice only (V1 and A1), no graphics, original sound or music.</li>
 </ol>
-<p class="muted">Tracks: V1 footage, V2 number/caption graphics, A1 voice-over, A2 original sound, A3 music. Chapter markers are not carried over (use <code>chapters.txt</code>). Keep <code>clips/</code>, <code>clips_av/</code>, <code>gfx/</code> and <code>audio_trim/</code> where they are.</p>
+<p class="muted">Tracks: V1 footage, V2 character (if used), next track number/caption graphics, A1 voice-over, A2 original sound, A3 music. Chapter markers are not carried over (use <code>chapters.txt</code>). Keep <code>clips/</code>, <code>clips_av/</code>, <code>gfx/</code>, <code>char_layers/</code> and <code>audio_trim/</code> where they are.</p>
 
 <h2 id="premiere">Opening it in Premiere</h2>
 <ol class="steps">
@@ -286,12 +303,12 @@
 <table>
   <tr><th>Track</th><th>Contents</th></tr>
   <tr><td>V1</td><td>Footage, stills, slates (black cards for missing shots)</td></tr>
-  <tr><td>V2</td><td>Number and caption graphics</td></tr>
+  <tr><td>V2, V3 ...</td><td>One track per character (only when used); number and caption graphics go on the track after them</td></tr>
   <tr><td>A1</td><td>Voice-over</td></tr>
   <tr><td>A2</td><td>Original clip sound (only segments with keep_audio)</td></tr>
   <tr><td>A3</td><td>Music bed (Settings → "background music bed" on, and a track uploaded to Music)</td></tr>
 </table>
-<div class="warn"><b>Don't move or rename</b> the <code>clips/</code>, <code>gfx/</code> and <code>audio_trim/</code> folders after importing, or Premiere loses the links. Sequence markers show chapters and any missing shots.</div>
+<div class="warn"><b>Don't move or rename</b> the <code>clips/</code>, <code>gfx/</code>, <code>char_layers/</code> and <code>audio_trim/</code> folders after importing, or Premiere loses the links. Sequence markers show chapters and any missing shots.</div>
 <p class="muted">Clips from a different shape (old 4:3 games, vertical video) can look odd: Settings → <b>Fill</b> → <code>pad</code> (black bars) or <code>blur</code> (blurred background).</p>
 
 <h2 id="fix">When something goes wrong</h2>
